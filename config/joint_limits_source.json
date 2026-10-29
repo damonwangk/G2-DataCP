@@ -1,0 +1,130 @@
+{
+    "end_effector": {
+        "dahuan": {
+            "left_tool": [
+                {
+                    "max": 0.025,
+                    "min": 0.0,
+                    "name": "idx31_gripper_l_inner_joint1"
+                }
+            ],
+            "right_tool": [
+                {
+                    "max": 0.025,
+                    "min": 0.0,
+                    "name": "idx71_gripper_r_inner_joint1"
+                }
+            ]
+        }
+    },
+    "idx01_body_joint1": {
+        "max": 0.0001,
+        "min": -1.0822,
+        "type": "float"
+    },
+    "idx02_body_joint2": {
+        "max": 2.653,
+        "min": -0.0001,
+        "type": "float"
+    },
+    "idx03_body_joint3": {
+        "max": 1.039,
+        "min": -1.907,
+        "type": "float"
+    },
+    "idx04_body_joint4": {
+        "max": 0.4364,
+        "min": -0.4364,
+        "type": "float"
+    },
+    "idx05_body_joint5": {
+        "max": 3.0456,
+        "min": -3.0456,
+        "type": "float"
+    },
+    "idx11_head_joint1": {
+        "max": 0.781,
+        "min": -0.781,
+        "type": "float"
+    },
+    "idx12_head_joint2": {
+        "max": 0.151,
+        "min": -0.151,
+        "type": "float"
+    },
+    "idx13_head_joint3": {
+        "max": 0.5231,
+        "min": -0.0181,
+        "type": "float"
+    },
+    "idx21_arm_l_joint1": {
+        "max": 3.0718,
+        "min": -3.0718,
+        "type": "float"
+    },
+    "idx22_arm_l_joint2": {
+        "max": 2.0595,
+        "min": -2.0595,
+        "type": "float"
+    },
+    "idx23_arm_l_joint3": {
+        "max": 3.0718,
+        "min": -3.0718,
+        "type": "float"
+    },
+    "idx24_arm_l_joint4": {
+        "max": 1.0123,
+        "min": -2.4959,
+        "type": "float"
+    },
+    "idx25_arm_l_joint5": {
+        "max": 3.0718,
+        "min": -3.0718,
+        "type": "float"
+    },
+    "idx26_arm_l_joint6": {
+        "max": 1.0123,
+        "min": -1.0123,
+        "type": "float"
+    },
+    "idx27_arm_l_joint7": {
+        "max": 1.5359,
+        "min": -1.5359,
+        "type": "float"
+    },
+    "idx61_arm_r_joint1": {
+        "max": 3.0718,
+        "min": -3.0718,
+        "type": "float"
+    },
+    "idx62_arm_r_joint2": {
+        "max": 2.0595,
+        "min": -2.0595,
+        "type": "float"
+    },
+    "idx63_arm_r_joint3": {
+        "max": 3.0718,
+        "min": -3.0718,
+        "type": "float"
+    },
+    "idx64_arm_r_joint4": {
+        "max": 1.0123,
+        "min": -2.4959,
+        "type": "float"
+    },
+    "idx65_arm_r_joint5": {
+        "max": 3.0718,
+        "min": -3.0718,
+        "type": "float"
+    },
+    "idx66_arm_r_joint6": {
+        "max": 1.0123,
+        "min": -1.0123,
+        "type": "float"
+    },
+    "idx67_arm_r_joint7": {
+        "max": 1.5359,
+        "min": -1.5359,
+        "type": "float"
+    }
+}

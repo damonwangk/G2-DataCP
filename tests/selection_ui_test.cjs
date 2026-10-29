@@ -1,0 +1,36 @@
+
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const nodes=new Map(),lists=new Map(),saved=new Map();
+const node=key=>{if(!nodes.has(key))nodes.set(key,{textContent:'',innerHTML:'',value:'',hidden:false,disabled:false,dataset:{},style:{},classList:{toggle(){},add(){},remove(){}},handlers:{},addEventListener(k,f){this.handlers[k]=f},querySelectorAll(){return []},showModal(){},close(){}});return nodes.get(key)};
+const ctx={document:{querySelector:node,querySelectorAll:s=>lists.get(s)||[]},console,Date,JSON,Math,Number,String,Array,Object,Map,Promise,AbortSignal,localStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v)},fetch:()=>new Promise(()=>{}),setTimeout(){},setInterval(){},requestAnimationFrame(){},devicePixelRatio:1};
+vm.createContext(ctx);
+for(const f of ['static/app.js','static/selection.js'])vm.runInContext(fs.readFileSync(f,'utf8'),ctx);
+(async()=>{
+ const camera={checked:true,value:'/camera/head_color',dataset:{topic:''}},joint={checked:false,value:'/hal/joint_state',dataset:{topic:''}};
+ lists.set('#captureSelection input[data-topic]',[camera,joint]);lists.set('#captureSelection input',[camera,joint]);
+ vm.runInContext('dataCatalog={topics:[{},{}]}',ctx);
+ const requests=[];ctx.fetch=async(path,opts)=>{requests.push({path,body:opts.body?JSON.parse(opts.body):null});return {ok:true,json:async()=>({})}};
+ await node('#record').handlers.click();
+ assert.deepEqual(requests.at(-1).body.topics,['/camera/head_color']);
+ const name='idx21_arm_l_joint1',grip='idx71_gripper_r_inner_joint1';
+ lists.set('#replayTargets input[data-joint]',[{checked:true,value:name},{checked:false,value:grip}]);
+ vm.runInContext("selected='episode_1_test';selectionFile=selected;fileContents={};pendingMotion='replay'",ctx);
+ node('#robotSpeed').value='1';
+ await node('#plan').handlers.click();
+ assert.deepEqual(requests.at(-1).body.controlled_names,[name]);
+ await node('#execute').handlers.click();
+ assert.match(node('#motionSummary').textContent,/1 个/);
+ await node('#confirmMotion').handlers.click();
+ assert.deepEqual(requests.at(-1).body.controlled_names,[name]);
+ assert.equal(requests.at(-1).path,'/api/replay/start');
+ lists.get('#replayTargets input[data-joint]')[0].checked=false;
+ const before=requests.length;await node('#execute').handlers.click();
+ assert.equal(requests.length,before);assert.match(node('#notice').textContent,/请选择要执行/);
+ const receive={dataset:{receiveRate:'/camera/head_color'}},record={dataset:{recordRate:'/camera/head_color'}};
+ lists.set('[data-receive-rate]',[receive]);lists.set('[data-record-rate]',[record]);
+ ctx.renderDataRates({streams:[{topic:'/camera/head_color',online:true,hz:30}],recording:{active:true,selected_topics:['/camera/head_color'],hz:{'/camera/head_color':29.9}},robot_replay:{running:true,send_hz:99.2,accepted_hz:95.1}});
+ assert.equal(receive.textContent,'30.0 Hz');assert.equal(record.textContent,'29.9 Hz');
+ assert.match(node('#replayRate').textContent,/99.2 Hz/);assert.match(node('#replayRate').textContent,/95.1 Hz/);
+ assert.equal(camera.disabled,true);
+ console.log('PASS selected capture topics, selected SDK names, empty motion selection, independent observed rates');
+})().catch(e=>{console.error(e);process.exitCode=1});

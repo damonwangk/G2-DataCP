@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+_deps/
+vendor/
+data/
+poses/
+evidence/
+runtime/
+*.mcap
+*.mcap.partial
+*.log
+last_recording.json
+config/*
+!config/joint_limits_source.json
+!config/robot_control.example.json

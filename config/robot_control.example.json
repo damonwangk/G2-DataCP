@@ -1,0 +1,5 @@
+{
+  "host": "REPLACE_WITH_ROBOT_HOST",
+  "operator_port": 0,
+  "robot_aid": "REPLACE_WITH_ROBOT_AID"
+}
