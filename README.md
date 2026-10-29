@@ -9,7 +9,7 @@
 - 所有前端资源和 Python 依赖已放在机器人，不需要外网，不使用 8766。
 
 ## 日常使用：一个文件夹连续采集
-1. 机器人开机后，采集后台和网页服务自动启动；Ubuntu 连上网线后，双击桌面「机器人采集工作台」。Ubuntu 只显示网页，不运行采集程序。
+1. 机器人开机后手动启动采集后台和网页服务（见下文）；Ubuntu 连上网线后，双击桌面「机器人采集工作台」。Ubuntu 只显示网页，不运行采集程序。
 2. 选择机器人保存文件夹，例如 `/data/data/A`。下一次开始采集仍使用 A，无需重新选目录。
 3. 「机器人端开始采集」创建 `A/episode_1_采集时间/raw.mcap`；「结束机器人采集」保存并停止。
 4. 连续分段时点击「保存并开始下一条」：先保存当前 episode，随后在同一文件夹创建下一条；选择的原始通道继续使用。也可结束后再点开始。
@@ -23,16 +23,19 @@
 - 「删除所选机器人数据」会先显示记录条数和占用空间，再确认永久删除。删除只影响勾选的机器人记录，已导出到电脑的文件保留；采集文件夹本身保留。正在采集或回放使用的记录不能删除。
 
 ## 机器人关机后重新使用
-正常流程：机器人开机 → 等待系统启动 → 网线连接 Ubuntu → 双击桌面网页入口。
-机器人采集服务已经设为开机启动，关闭网页不影响正在采集的 episode。关机器人电源前请结束并保存当前采集。
+正常流程：机器人开机 → 手动启动机器人采集服务和网页服务 → 电脑接上网线 → 打开网页。这两项服务不再设置为开机自动启动。关闭网页不影响正在采集的 episode；关机器人电源前请结束并保存当前采集。
 
-如果机器人已开机但网页尚未打开，在 Ubuntu 终端执行（只启动网页/采集服务，不发动作）：
-```
+通过现有 Ubuntu 启动：在 Ubuntu 终端执行以下命令，然后双击桌面「机器人采集工作台」打开网页：
+```bash
 ssh g2 'systemctl --user start r2-mcap-recorder.service r2-mcap-studio.service'
-systemctl --user restart r2-robot-recorder-tunnel.service
-xdg-open http://127.0.0.1:8765/
 ```
-网线直连网页也可用 `http://10.42.1.101:18769/`。Mac 的现有入口 `http://127.0.0.1:18765/` 由登录后自动启动的 SSH 转发提供。
+上述命令只启动采集和网页服务，不下发机器人动作。如果 Ubuntu 的网页入口连接异常，可运行 `systemctl --user restart r2-robot-recorder-tunnel.service` 后重新打开入口。
+
+通过其他电脑网线直连时，仍需先在机器人端手动启动两项服务；可登录机器人执行：
+```bash
+systemctl --user start r2-mcap-recorder.service r2-mcap-studio.service
+```
+然后在连到机器人网线的电脑上打开 `http://10.42.1.101:18769/`。Mac 的现有入口 `http://127.0.0.1:18765/` 由登录后自动启动的 SSH 转发提供；该转发不启动机器人上的采集服务。
 
 ## 机器人本机命令
 ```
@@ -43,7 +46,7 @@ python3 recordctl.py start --label episode
 python3 recordctl.py stop
 systemctl --user status r2-mcap-recorder.service r2-mcap-studio.service
 ```
-采集是独立后台进程，关闭网页或断开电脑不停止采集。前端与后端服务在机器人开机后启动。
+采集是独立后台进程，关闭网页或断开电脑不停止采集。机器人开机后需手动启动采集和网页服务。
 原有通道选择、频率、范围提醒、只读控制检测、姿态保存/恢复和部分关节/夹爪回放保留。姿态不包含底盘。
 
 ## 原始数据保存
@@ -129,4 +132,4 @@ https://developer.chrome.com/docs/capabilities/web-apis/file-system-access
 
 将电脑网口接到机器人网络，在浏览器打开 http://10.42.1.101:18769/ 。若未自动获得同网段地址，可将有线网卡设置为未被占用的 `10.42.1.x`、子网掩码 `255.255.255.0`，网关和 DNS 留空；代理应对该地址直连。`127.0.0.1:18765` 是原 Mac 的 SSH 转发入口，不能在另一台电脑上直接复用。普通 HTTP 下若浏览器不支持目录写入，可用 TAR 下载。
 
-当前机器人上的两项 systemd 用户服务配置为 enabled，且用户 linger 已启用；正常开机按配置自动启动。可用 `systemctl --user status r2-mcap-recorder.service r2-mcap-studio.service` 检查。当前没有通过实际断电重启验证。
+机器人开机后须手动启动 `r2-mcap-recorder.service` 和 `r2-mcap-studio.service`，命令见「机器人关机后重新使用」。可用 `systemctl --user status r2-mcap-recorder.service r2-mcap-studio.service` 检查状态。
