@@ -13,3 +13,10 @@ last_recording.json
 config/*
 !config/joint_limits_source.json
 !config/robot_control.example.json
+.venv/
+extra_deps/
+wheelhouse/
+datasets/
+*.mcap
+*.parquet
+*.mp4

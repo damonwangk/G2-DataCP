@@ -6,6 +6,7 @@ import os
 import shutil
 from pathlib import Path
 import library
+import workflow
 import time
 from fastapi import FastAPI, Body, HTTPException
 from fastapi.responses import FileResponse, Response, JSONResponse
@@ -41,6 +42,7 @@ async def lifespan(app):
         startup_error=str(exc)
     yield
     playback.stop()
+    workflow.conversion.stop();workflow.replay.stop()
     if robot_job and robot_job.running:
         robot_job.stop()
         robot_job.thread.join(timeout=10)
@@ -50,6 +52,14 @@ async def lifespan(app):
 app=FastAPI(title='R2 MCAP Studio',lifespan=lifespan)
 from exports import router as export_router
 app.include_router(export_router)
+app.include_router(workflow.router)
+
+def require_motion_available():
+    recorder.refresh()
+    if recorder.active:raise ValueError("请先结束当前采集")
+    if robot_job and (robot_job.running or robot_job.preparing):raise ValueError("已有 MCAP 回放或姿态恢复正在执行")
+workflow.motion_available=require_motion_available
+
 app.mount('/static',StaticFiles(directory=ROOT/'static'),name='static')
 
 @app.exception_handler(ValueError)
@@ -95,6 +105,7 @@ def camera(name:str,source:str='live'):
 
 @app.post('/api/record/start')
 def record_start(body:dict=Body(default={})):
+    if workflow.replay.running():raise ValueError("LeRobot 动作回放正在执行，请先停止")
     recorder.refresh()
     if robot_job and (robot_job.running or robot_job.preparing):
         raise ValueError('实机回放已在记录反馈，结束后再开始新采集')
@@ -105,6 +116,7 @@ def record_start(body:dict=Body(default={})):
 
 @app.post('/api/record/next')
 def record_next(body:dict=Body(default={})):
+    if workflow.replay.running():raise ValueError("LeRobot 动作回放正在执行，请先停止")
     if robot_job and (robot_job.running or robot_job.preparing):
         raise ValueError('动作任务的执行反馈由任务保存')
     context={}
@@ -158,6 +170,7 @@ def replay_plan(body:dict=Body(...)):
 
 @app.post('/api/replay/start')
 def replay_start(body:dict=Body(...)):
+    if workflow.replay.running():raise ValueError("LeRobot 动作回放正在执行，请先停止")
     recorder.refresh()
     global robot_job
     from robot_replay import RobotJob
@@ -186,6 +199,10 @@ def replay_pause():
 
 @app.get('/guide')
 def guide():
+    return FileResponse(workflow.BASE/'README.md',media_type='text/plain; charset=utf-8')
+
+@app.get('/guide/studio')
+def studio_guide():
     return FileResponse(ROOT/'README.md',media_type='text/plain; charset=utf-8')
 
 
@@ -220,6 +237,7 @@ def pose_check(identity:str):
 
 @app.post('/api/poses/{identity}/restore')
 def pose_restore(identity:str,body:dict=Body(...)):
+    if workflow.replay.running():raise ValueError("LeRobot 动作回放正在执行，请先停止")
     global robot_job
     from robot_replay import RobotJob
     if body.get('confirm_motion') is not True:raise ValueError('需要点击确认恢复姿态')
@@ -272,8 +290,8 @@ def robot_storage_import(body:dict=Body(...)):
 
 
 @app.get('/api/library/tree')
-def library_tree():
-    return library.tree()
+def library_tree(path:str|None=None):
+    return library.tree(path)
 
 @app.get('/api/library/directories')
 def library_directories(path:str|None=None):
@@ -287,6 +305,7 @@ def library_select_root(body:dict=Body(...)):
 def library_delete(body:dict=Body(...)):
     if body.get('confirm') is not True:raise ValueError('请确认永久删除所选记录')
     paths=library.resolve_episodes(body.get('episode_paths'))
+    if workflow.conversion.running() and any(p==q or p.is_relative_to(q) or q.is_relative_to(p) for p in paths for q in workflow.conversion.sources):raise ValueError('所选记录正在转换，请先停止转换')
     state=recorder.refresh()
     active=Path(state['path']).parent.resolve() if state.get('active') and state.get('path') else None
     source=(data_dir()/robot_job.file).resolve() if robot_job and robot_job.kind=='replay' and (robot_job.running or robot_job.preparing) else None

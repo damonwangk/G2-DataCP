@@ -32,7 +32,7 @@ class Contracts(unittest.TestCase):
         self.assertIsNone(choose(s,250,previous=True,tolerance_ns=20))
     def test_lossless_mcap_roundtrip(self):
         import storage,json,time
-        publishers=json.loads((ROOT/'evidence/registry.json').read_text());p=next(p for p in publishers if p['topic']=='/camera/head_color' and p['exe_name']=='cosine_runner')
+        p={'topic':'/camera/head_color','exe_name':'cosine_runner','type':'CosineDataPacket','uid':'roundtrip-fixture'}
         frame=(ROOT/'evidence/camera_head_color_cosine_runner.bin').read_bytes();meta,data,image=decode(frame,p['type'],self.schemas)
         with tempfile.TemporaryDirectory() as tmp,patch.object(storage,'data_dir',return_value=Path(tmp)):
             recorder=Recorder(self.schemas);recorder.start('roundtrip',[])

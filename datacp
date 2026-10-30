@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Command-line client for the robot-local DataCP HTTP API (stdlib only)."""
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+class Client:
+    def __init__(self, base):
+        self.base = base.rstrip('/')
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def call(self, path, body=None):
+        data = None if body is None else json.dumps(body, ensure_ascii=False).encode()
+        request = urllib.request.Request(self.base + path, data=data,
+            headers={'Content-Type': 'application/json'})
+        with self.opener.open(request, timeout=90) as response:
+            return json.load(response)
+
+    def download(self, path, output):
+        output = Path(output).expanduser()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with self.opener.open(self.base + path, timeout=90) as response, output.open('xb') as target:
+            while True:
+                block = response.read(1024 * 1024)
+                if not block: break
+                target.write(block)
+        return {'saved': str(output.resolve()), 'bytes': output.stat().st_size}
+
+
+def parser():
+    p = argparse.ArgumentParser(description='机器人 DataCP：采集、转换、回放、导出')
+    p.add_argument('--url', default=os.environ.get('DATACP_URL', 'http://127.0.0.1:18769'))
+    sub = p.add_subparsers(dest='command', required=True)
+    for command in ['status','record-status','record-stop','convert-status','convert-stop',
+                    'replay-status','replay-stop','mcap-replay-status','mcap-replay-stop']:
+        sub.add_parser(command)
+    d = sub.add_parser('record-dir'); d.add_argument('path'); d.add_argument('--create', action='store_true')
+    d = sub.add_parser('lerobot-dir'); d.add_argument('path', help='转换、回放和导出共用的 LeRobot 保存目录')
+    for command in ['record-start','record-next']:
+        d = sub.add_parser(command); d.add_argument('--label', default='episode'); d.add_argument('--topics', nargs='+')
+    d = sub.add_parser('library'); d.add_argument('--root')
+    d = sub.add_parser('mcap-files'); d.add_argument('--category', default='collection')
+    d = sub.add_parser('mcap-replay'); d.add_argument('--file', required=True); d.add_argument('--speed', type=float, default=1.)
+    d = sub.add_parser('convert')
+    source = d.add_mutually_exclusive_group(required=True)
+    source.add_argument('--episode', action='append', dest='episodes', help='MCAP文件或episode目录，可重复指定')
+    source.add_argument('--source-dir', help='自动递归发现目录内的MCAP episode')
+    d.add_argument('--output-dir', help='省略时使用网页保存的 LeRobot 目录')
+    destination=d.add_mutually_exclusive_group(required=True)
+    destination.add_argument('--name', help='本次转换的单层文件夹名称，保存为 输出目录/名称')
+    destination.add_argument('--repo-id', help='兼容旧脚本的 owner/name 格式')
+    d.add_argument('--task', required=True)
+    d = sub.add_parser('datasets'); d.add_argument('--root', help='省略时读取网页保存的 LeRobot 目录')
+    d = sub.add_parser('inspect'); d.add_argument('--dataset', required=True); d.add_argument('--episode', type=int)
+    d = sub.add_parser('replay'); d.add_argument('--dataset', required=True); d.add_argument('--episode', required=True, type=int)
+    d = sub.add_parser('export-mcap'); d.add_argument('--episode', action='append', required=True); d.add_argument('--output', required=True)
+    d = sub.add_parser('export-lerobot'); d.add_argument('--dataset', required=True); d.add_argument('--output', required=True)
+    return p
+
+
+def dispatch(a, client):
+    command = a.command
+    if command == 'status':
+        state = client.call('/api/state')
+        return {'recording':state.get('recording'), 'data_dir':state.get('data_dir'),
+                'mcap_replay':state.get('robot_replay'), 'workflow':client.call('/api/workflow/state')}
+    if command in ('record-status','mcap-replay-status'):
+        state = client.call('/api/state')
+        return state.get('recording' if command == 'record-status' else 'robot_replay')
+    if command == 'record-dir': return client.call('/api/directory', {'path':a.path,'create':a.create})
+    if command == 'lerobot-dir': return client.call('/api/workflow/settings', {'lerobot_root':a.path})
+    if command in ('record-start','record-next'):
+        body = {'label':a.label}
+        if a.topics is not None: body['topics'] = a.topics
+        return client.call('/api/record/' + ('start' if command == 'record-start' else 'next'), body)
+    if command == 'record-stop': return client.call('/api/record/stop', {})
+    if command == 'library':
+        if a.root: client.call('/api/library/root', {'path':a.root})
+        return client.call('/api/library/tree')
+    if command == 'mcap-files': return client.call('/api/files?' + urllib.parse.urlencode({'category':a.category}))
+    if command == 'mcap-replay':
+        return client.call('/api/replay/start', {'file':a.file,'speed':a.speed,'confirm_motion':True})
+    if command == 'mcap-replay-stop': return client.call('/api/replay/stop', {})
+    if command == 'convert':
+        body = {'task':a.task}
+        if a.output_dir:body['output_dir']=a.output_dir
+        if a.name:body['dataset_name']=a.name
+        else:body['repo_id']=a.repo_id
+        if a.episodes: body['episode_paths'] = a.episodes
+        else: body['source_dir'] = a.source_dir
+        return client.call('/api/conversion/start', body)
+    if command in ('convert-status','replay-status'):
+        return client.call('/api/workflow/state')['conversion' if command == 'convert-status' else 'replay']
+    if command == 'convert-stop': return client.call('/api/conversion/stop', {})
+    if command == 'datasets': return client.call('/api/lerobot/datasets'+('?' + urllib.parse.urlencode({'root':a.root}) if a.root else ''))
+    if command == 'inspect':
+        if a.episode is None: return client.call('/api/lerobot/episodes?' + urllib.parse.urlencode({'dataset':a.dataset}))
+        return client.call('/api/lerobot/inspect', {'dataset':a.dataset,'episode':a.episode})
+    if command == 'replay': return client.call('/api/lerobot/replay/start', {'dataset':a.dataset,'episode':a.episode})
+    if command == 'replay-stop': return client.call('/api/lerobot/replay/stop', {})
+    if command == 'export-mcap':
+        job = client.call('/api/export/prepare', {'episode_paths':a.episode})
+        return client.download(job['archive_url'], a.output)
+    if command == 'export-lerobot':
+        return client.download('/api/lerobot/export/archive?' + urllib.parse.urlencode({'dataset':a.dataset}), a.output)
+    raise ValueError('未知命令')
+
+
+def main(argv=None):
+    a = parser().parse_args(argv)
+    try:
+        result = dispatch(a, Client(a.url))
+    except urllib.error.HTTPError as exc:
+        print(exc.read().decode('utf-8', 'replace'), file=sys.stderr); return 1
+    except (OSError, ValueError, KeyError) as exc:
+        print(str(exc), file=sys.stderr); return 1
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+if __name__ == '__main__':
+    raise SystemExit(main())

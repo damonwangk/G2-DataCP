@@ -1,0 +1,20 @@
+# Python 3.10/3.11; isolated conversion/official dataset-reader dependencies.
+# Install pinned LeRobot separately with --no-deps, as described in README.md.
+av==18.1.0; python_version >= '3.11'
+av==17.0.0; python_version < '3.11'
+datasets==3.6.0
+draccus==0.10.0
+einops==0.8.2
+huggingface-hub==0.36.2
+jsonlines==4.0.0
+numpy==1.26.4
+omegaconf==2.3.0
+packaging==26.3
+pandas==2.3.3
+pillow==13.0.0; python_version >= '3.11'
+pillow==12.2.0; python_version < '3.11'
+pyarrow==20.0.0
+termcolor==3.3.0
+torch==2.7.1
+torchvision==0.22.1
+tqdm==4.70.1

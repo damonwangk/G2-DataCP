@@ -28,6 +28,19 @@ class LibraryTests(unittest.TestCase):
   self.assertEqual(out['tree']['count'],2);self.assertEqual([g['name'] for g in out['tree']['groups']],['A','B'])
   self.assertEqual(out['tree']['groups'][0]['episodes'][0]['id'],str(a))
   self.assertEqual(out['tree']['groups'][1]['groups'][0]['episodes'][0]['id'],str(b))
+ def test_conversion_tree_scope_does_not_change_export_or_capture_directory(self):
+  a=self.episode('A');b=self.episode('B')
+  export_before=library.SETTINGS.read_bytes();capture_before=storage.SETTINGS.read_bytes()
+  out=self.client.get('/api/library/tree',params={'path':str(a.parent)}).json()
+  self.assertEqual(out['root'],str(a.parent));self.assertEqual(out['tree']['count'],1)
+  self.assertEqual(out['tree']['episodes'][0]['id'],str(a))
+  self.assertEqual(library.SETTINGS.read_bytes(),export_before);self.assertEqual(storage.SETTINGS.read_bytes(),capture_before)
+  self.assertEqual(self.client.get('/api/library/tree').json()['tree']['count'],2)
+  self.assertTrue((b/'raw.mcap').exists())
+ def test_conversion_tree_reports_invalid_directory(self):
+  for path in ['relative/path',str(self.base/'missing')]:
+   result=self.client.get('/api/library/tree',params={'path':path})
+   self.assertEqual(result.status_code,400)
  def test_export_same_episode_names_in_different_folders(self):
   a=self.episode('A',payload=b'A');b=self.episode('B',payload=b'B')
   m=self.client.post('/api/export/prepare',json={'episode_paths':[str(a),str(b)]}).json()

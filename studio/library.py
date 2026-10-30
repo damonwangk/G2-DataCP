@@ -1,5 +1,6 @@
 """Robot-local episode folders. Inspect filenames/sidecars, never transform MCAP."""
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -53,21 +54,27 @@ def episode_row(p):
 def is_episode_file(p):
     return p.suffix == '.mcap' and not ('.aligned' in p.name or p.name.endswith(('_replay_trace.mcap', '_posture_trace.mcap')))
 
-def tree():
-    root = library_root()
+def tree(path=None):
+    root = Path(path).expanduser() if path is not None else library_root()
+    if not root.is_absolute() or not root.is_dir():
+        raise ValueError('请选择机器人上的已有绝对目录')
+    root = root.resolve()
     def visit(folder):
         groups, episodes = [], []
-        for p in sorted(folder.iterdir()):
-            if p.name.startswith('.') or p.is_symlink():
+        with os.scandir(folder) as scan:
+            entries=sorted(scan,key=lambda e:e.name)
+        for entry in entries:
+            if entry.name.startswith('.') or entry.is_symlink():
                 continue
-            if p.is_dir():
+            p=folder/entry.name
+            if entry.is_dir(follow_symlinks=False):
                 if (p / 'raw.mcap').is_file():
                     episodes.append(episode_row(p))
                 elif not (p / 'raw.mcap.partial').exists():
                     child = visit(p)
                     if child['count']:
                         groups.append(child)
-            elif p.is_file() and is_episode_file(p):
+            elif is_episode_file(p) and entry.is_file(follow_symlinks=False):
                 episodes.append(episode_row(p))
         episodes.sort(key=lambda e: e['modified_ns'], reverse=True)
         return {'name': folder.name, 'path': str(folder), 'relative_path': str(folder.relative_to(root)),

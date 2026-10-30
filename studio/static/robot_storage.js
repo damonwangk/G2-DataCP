@@ -1,5 +1,5 @@
 'use strict';
-let robotFileRows=[],libraryTree=null,libraryRoot='',libraryOpen=new Map(),exportSelection=new Set(),exportDirectory=null,exportBusy=false,exportAbort=null,pendingDelete=[];
+let robotFileRows=[],libraryTree=null,libraryRoot='',libraryOpen=new Map(),exportSelection=new Set(),exportDirectory=null,exportBusy=false,exportAbort=null,pendingDelete=[],robotFilesRefresh=null;
 const directoryPickerAvailable=typeof window!=='undefined'&&typeof window.showDirectoryPicker==='function';
 function clientComputer(){
  const platform=typeof navigator!=='undefined'?(navigator.userAgentData?.platform||navigator.platform||'当前电脑'):'当前电脑';
@@ -18,6 +18,9 @@ function updateExportControls(){
  ['exportSelected','exportArchive','deleteSelected'].forEach(id=>$('#'+id).disabled=exportBusy||!exportSelection.size);
  ['chooseExportFolder','chooseLibraryRoot','useCaptureRoot','exportAll','exportNone'].forEach(id=>$('#'+id).disabled=exportBusy);
  $('#cancelExport').disabled=!exportAbort;
+ if(typeof updateConversionSelection==='function')updateConversionSelection();
+ if(typeof updateUnifiedExportControls==='function')updateUnifiedExportControls();
+ if($('#convertSelected'))$('#convertSelected').disabled=exportBusy||!exportSelection.size;
  document.querySelectorAll('[data-export-file],[data-export-group]').forEach(el=>el.disabled=exportBusy||el.dataset.empty==='true');
 }
 function rememberFolderExpansion(){
@@ -54,17 +57,22 @@ function renderRobotFiles(){
  }));
  updateExportControls();
 }
-async function refreshRobotFiles(){
- const result=await api('/api/library/tree');
- if(result.root!==libraryRoot){libraryOpen.clear();exportSelection.clear();}
- libraryRoot=result.root;libraryTree=result.tree;robotFileRows=libraryTree?folderEpisodes(libraryTree):[];
- $('#libraryRoot').value=libraryRoot||'';renderRobotFiles();
+function refreshRobotFiles(){
+ if(robotFilesRefresh)return robotFilesRefresh;
+ robotFilesRefresh=(async()=>{
+  const result=await api('/api/library/tree');
+  if(result.root!==libraryRoot){libraryOpen.clear();exportSelection.clear();}
+  libraryRoot=result.root;libraryTree=result.tree;robotFileRows=libraryTree?folderEpisodes(libraryTree):[];
+  $('#libraryRoot').value=libraryRoot||'';renderRobotFiles();
+  if($('#exportProgress').textContent.startsWith('目录列表读取失败：'))$('#exportProgress').textContent='目录列表已恢复，可选择记录进行导出。';
+ })().catch(error=>{$('#exportProgress').textContent='目录列表读取失败：'+error.message+'。可点击“刷新记录”重试。';throw error;}).finally(()=>{robotFilesRefresh=null;});
+ return robotFilesRefresh;
 }
 async function chooseExportDirectory(){
  if(!directoryPickerAvailable){
   $('#exportProgress').textContent='此浏览器使用下载保存：点击“下载打包文件”，在浏览器下载/另存为窗口选择位置；也可在浏览器设置中启用“下载前询问保存位置”。';return;
  }
- try{exportDirectory=await window.showDirectoryPicker({id:'r2-mcap-export',mode:'readwrite'});$('#exportFolder').textContent=exportDirectory.name+' / 采集文件夹 / episode / 原始文件';}
+ try{exportDirectory=await window.showDirectoryPicker({id:'r2-data-export',mode:'readwrite'});$('#exportFolder').textContent=exportDirectory.name+' / 保留原目录结构';}
  catch(e){if(e.name!=='AbortError')throw e;}
 }
 async function streamToFile(url,fileHandle,onBytes,signal){
@@ -129,7 +137,7 @@ action('#chooseLibraryRoot',async()=>{directoryTarget='library';$('#createDir').
 action('#useCaptureRoot',async()=>{const path=current?.recording.data_dir||current?.data_dir;if(!path)throw Error('尚未取得采集目录');await api('/api/library/root',{path});await refreshRobotFiles();});
 action('#refreshRobotFiles',refreshRobotFiles);action('#chooseExportFolder',chooseExportDirectory);
 action('#exportAll',()=>{exportSelection=new Set(robotFileRows.filter(r=>r.category==='collection').map(r=>r.id));renderRobotFiles();});
-action('#exportNone',()=>{exportSelection.clear();renderRobotFiles();});action('#exportSelected',exportToDirectory);action('#exportArchive',downloadArchive);action('#cancelExport',()=>exportAbort?.abort());
+action('#exportNone',()=>{exportSelection.clear();renderRobotFiles();});action('#exportSelected',()=>typeof runSelectedExport==='function'?runSelectedExport():exportToDirectory());action('#exportArchive',()=>typeof runSelectedArchive==='function'?runSelectedArchive():downloadArchive());action('#cancelExport',()=>typeof cancelSelectedExport==='function'?cancelSelectedExport():exportAbort?.abort());
 action('#deleteSelected',requestEpisodeDelete);action('#cancelDeleteEpisodes',()=>{pendingDelete=[];$('#deleteEpisodeDialog').close();});action('#confirmDeleteEpisodes',deleteEpisodes);
 $('#exportComputer').textContent='导出目标：当前访问电脑（'+clientComputer()+'）';
 $('#exportMethodNote').textContent=directoryPickerAvailable?'勾选文件夹可批量导出，展开后可选具体 episode；导出保留原来的文件夹层级和原始 MCAP。':'勾选文件夹或具体 episode 后下载 TAR 包。请在浏览器下载设置中启用“每次询问保存位置”；解包后保留原目录层级。';
