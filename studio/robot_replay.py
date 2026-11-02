@@ -1,4 +1,9 @@
-"""Full-episode measured-trajectory replay through the vendor's normal servo API."""
+# 使用说明
+# 用途：MCAP原始控制指令轨迹读取、回放/姿态后台任务管理。
+# 用法：内部模块；使用网页显式执行或根目录 ./datacp mcap-replay --file 记录名；停止用 mcap-replay-stop。
+# 详细说明：回放与姿态使用说明.md
+
+"""原 MCAP 控制指令的完整事件回放与后台任务管理；无插值、无补值。"""
 from bisect import bisect_right
 import json
 import math
@@ -16,46 +21,36 @@ GRIPS=['/hal/left_ee_data','/hal/right_ee_data']
 
 
 class Trajectory:
+    """原 MCAP 指令事件的名称选择和时间窗口；不生成中间位置。"""
     def __init__(self,path,schemas,start_s=0,duration_s=0,controlled_names=None):
-        self.path=Path(path);requested=None if controlled_names is None else set(controlled_names)
-        topics=[JOINT,*GRIPS]
-        if requested is not None:
-            if not requested:raise ValueError('请选择要回放的关节或夹爪')
-            topics=[t for t in topics if (t==JOINT and any('gripper' not in n for n in requested)) or
-                    (t==GRIPS[0] and 'idx31_gripper_l_inner_joint1' in requested) or
-                    (t==GRIPS[1] and 'idx71_gripper_r_inner_joint1' in requested)]
-        rows={t:[] for t in topics};names={};types={}
-        for e in raw_events(path,schemas,topics=topics):
-            topic=e['topic']
-            if topic not in rows:continue
-            d=e['data'];current_names=d.get('name',[])
-            selected=[n for n in current_names if requested is None or n in requested]
-            if not selected:continue
-            values=d.get('motor_position',[]) if topic==JOINT else [m.get('position') for m in d.get('end_state',[])]
-            mapped=dict(zip(current_names,values));names.setdefault(topic,selected)
-            if any(n not in mapped or mapped[n] is None for n in names[topic]):raise ValueError('所选关节缺少位置值')
-            values=[mapped[n] for n in names[topic]]
-            rows[topic].append((e['wall_ns'],values))
-            if topic in GRIPS:types[topic]=d.get('type')
-        self.topics=[t for t in topics if rows[t]]
-        if not self.topics:raise ValueError('文件中没有所选动作数据；仅图像文件可使用文件预览')
-        self.names=[n for t in self.topics for n in names[t]]
-        self.joint_count=len(names.get(JOINT,[]));self.gripper_types=types
-        self.missing_names=[] if requested is None else sorted(requested-set(self.names))
-        self.origin_ns,self.end_ns=bounds(path)
-        self.full_duration=max(.01,(self.end_ns-self.origin_ns)/1e9)
-        self.start_s=float(start_s);self.duration=min(float(duration_s) if duration_s else self.full_duration-self.start_s,self.full_duration-self.start_s)
+        import sys
+        sys.path.insert(0,str(ROOT.parent/'replay'))
+        from source_episode import load_source
+        from trajectory import sample
+        self.path=Path(path);episode=load_source(path)
+        available=set(episode.get('available_names',episode['names']))
+        requested=set(available if controlled_names is None else controlled_names)
+        indices=[i for i,n in enumerate(episode['names']) if n in requested and n in available]
+        self.names=[episode['names'][i] for i in indices]
+        if not self.names:raise ValueError('没有选中可回放的原始关节名')
+        self.missing_names=sorted(requested-set(self.names))
+        self.joint_count=sum('gripper' not in n for n in self.names)
+        self.gripper_types={t:1 for t,n in zip(GRIPS,['idx31_gripper_l_inner_joint1','idx71_gripper_r_inner_joint1']) if n in self.names}
+        self.start_s=float(start_s);self.full_duration=episode['duration_s']
+        stop=min(self.full_duration,self.start_s+float(duration_s)) if duration_s else self.full_duration
+        self.duration=stop-self.start_s
         if self.start_s<0 or self.duration<=0:raise ValueError('回放时间范围无效')
-        self.times={t:np.array([(r[0]-self.origin_ns)/1e9 for r in rows[t]],dtype=float) for t in self.topics}
-        self.values={t:np.array([r[1] for r in rows[t]],dtype=float) for t in self.topics}
-        self.max_gaps={t:float(np.diff(v).max()) if len(v)>1 else 0. for t,v in self.times.items()}
-        self.initial=self.at(0)
+        first=max(0,bisect_right(episode['times'],self.start_s)-1)
+        selected=[first]+[i for i in range(first+1,len(episode['times'])) if episode['times'][i]<=stop]
+        ep=dict(episode);ep.pop('command_targets',None)
+        ep.update(names=self.names,times=[max(0,episode['times'][i]-self.start_s) for i in selected],
+            actions=[[episode['actions'][i][j] for j in indices] for i in selected],
+            recorded_states=[[episode['recorded_states'][i][j] for j in indices] for i in selected],
+            action_sources=['command']*len(selected),duration_s=self.duration)
+        self.episode=ep;self.initial=list(ep['actions'][0]);self.max_gaps={}
     def at(self,t):
-        target=min(self.start_s+max(0,float(t)),self.start_s+self.duration);q=[]
-        for topic in self.topics:
-            ts,values=self.times[topic],self.values[topic]
-            q.extend(values[max(0,bisect_right(ts,target)-1)].tolist())
-        return q
+        from trajectory import sample
+        return sample(self.episode,float(t))[1]
 
 
 def live_values(latest,names):
@@ -74,20 +69,15 @@ def plan(path,schemas,start_s=0,duration_s=0,speed=1,latest=None,controlled_name
     trajectory=Trajectory(path,schemas,start_s,duration_s,controlled_names)
     out={'file':Path(path).parent.name if Path(path).name=='raw.mcap' else Path(path).name,'duration_s':trajectory.duration,'execution_duration_s':trajectory.duration/speed,
          'speed':speed,'target_control_hz':100,'missing_names':trajectory.missing_names,'joint_count':trajectory.joint_count,'controlled_names':trajectory.names,
-         'gripper_types':trajectory.gripper_types,'source':'raw measured motor_position + native gripper position',
-         'timeline':'MCAP log_time (recording-host receive time), full recording duration',
-         'sample_policy':'latest original sample at each 100 Hz control tick; hold between samples; no interpolation',
-         'initial_policy':'return to first recorded positions before episode clock starts; hold first/last at channel edges',
+         'gripper_types':trajectory.gripper_types,'source':'original /hal/joint_cmd and /wbc/*_ee_command; nulls preserved',
+         'timeline':'original command Header PTP, full recording duration',
+         'sample_policy':'all original command events; 100 Hz hold when idle; no interpolation; null axes send no target',
+         'initial_policy':'direct first original command; no approach; initial unknown targets remain null',
          'control_api':'joint_servo_control, 100 Hz, enable_low_latency=False','max_sample_gap_s':trajectory.max_gaps,
          'base_drive_replayed':False, 'gripper_tracking_verified':False,
          'acceptance_note':'点击执行后由厂商接口挂起遥操并切换到 GDK 关节位控；实际发送结果见执行报告。'}
-    if latest is not None:
-        if callable(latest): latest=latest()
-        current=live_values(latest,trajectory.names);delta=np.abs(np.array(current)-trajectory.initial)
-        out['start_max_joint_delta_rad']=float(delta[:trajectory.joint_count].max(initial=0))
-        out['start_gripper_delta_native']=delta[trajectory.joint_count:].tolist()
-        out['return_to_start_seconds']=max(1.,float(delta[:trajectory.joint_count].max(initial=0))/.2,float(delta[trajectory.joint_count:].max(initial=0))/.01)
-        out['ready']=True
+    out['initial_values']=trajectory.initial
+    out['ready']=True
     return out
 
 

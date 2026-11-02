@@ -1,3 +1,9 @@
+/*
+使用说明
+用途：前端离线回归测试：selection界面交互。
+用法：在studio目录执行 node tests/selection_ui_test.cjs；使用虚拟DOM/API，不启动网页或机器人任务。
+详细说明：../README.md
+*/
 
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const nodes=new Map(),lists=new Map(),saved=new Map();

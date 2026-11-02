@@ -1,3 +1,9 @@
+# 使用说明
+# 用途：回放模块离线回归测试，使用临时样例和Fake SDK，不发送真机动作。
+# 使用：在replay目录运行 ../conversion/.venv/bin/python -m unittest -v test_image_free_dataset。
+# 依赖：conversion/extra_deps及对应测试fixture；支持整目录unittest发现。
+# 多文件使用说明：replay/README.md、README_clamped_smooth.md；总测试索引见../tests/README.md。
+#
 """A real Parquet state/action-only dataset must work without any image files."""
 from contextlib import redirect_stdout
 import io
@@ -62,15 +68,16 @@ class ImageFreeDatasetTests(unittest.TestCase):
             inspected = describe(root, 0)['selected_episode']
             self.assertEqual(inspected['names'], names)
             self.assertEqual(inspected['first_action'], stored_actions[0])
+            robot.initial_values = dict(zip(names, stored_actions[0]))
             episode = replay.load_episode(root, 0)
             self.assertEqual(episode['actions'], stored_actions)
             result = replay.execute(episode, {}, root / 'trace.jsonl', sdk, Clock(), handoff_fn=lambda _: {})
             self.assertTrue(result['completed'])
             self.assertEqual(result['unsent_frame_count'], 0)
             self.assertEqual(robot.requests[0][0], names)
-            self.assertEqual(robot.requests[0][1], stored_actions[0])
+            self.assertEqual(robot.requests[0][1][0], stored_actions[0][0])
             self.assertEqual(robot.requests[-1][1], stored_actions[-1])
-            self.assertTrue(all(request[1] in stored_actions for request in robot.requests))
+            self.assertEqual(episode['actions'], stored_actions)
 
     def test_cli_dry_run_without_images_or_sdk(self):
         old_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}

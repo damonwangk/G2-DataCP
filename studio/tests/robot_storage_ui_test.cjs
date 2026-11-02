@@ -1,8 +1,14 @@
+/*
+使用说明
+用途：前端离线回归测试：robot_storage界面交互。
+用法：在studio目录执行 node tests/robot_storage_ui_test.cjs；使用虚拟DOM/API，不启动网页或机器人任务。
+详细说明：../README.md
+*/
 
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const nodes=new Map(),lists=new Map();
 const node=key=>{if(!nodes.has(key))nodes.set(key,{textContent:'',innerHTML:'',value:'',hidden:false,disabled:false,dataset:{},style:{},classList:{toggle(){},add(){},remove(){}},handlers:{},addEventListener(k,f){this.handlers[k]=f},querySelectorAll(){return []},showModal(){},close(){}});return nodes.get(key)};
-const ctx={document:{querySelector:node,querySelectorAll:s=>lists.get(s)||[]},console,Date,JSON,Math,Number,String,Array,Object,Map,Promise,AbortSignal,localStorage:{getItem:()=>null,setItem(){}},fetch:path=>path==='/api/library/tree'?Promise.resolve({ok:true,json:async()=>({root:'/data/data',tree:null})}):new Promise(()=>{}),setTimeout(){},setInterval(){},requestAnimationFrame(){},devicePixelRatio:1};
+const ctx={URLSearchParams,document:{querySelector:node,querySelectorAll:s=>lists.get(s)||[]},console,Date,JSON,Math,Number,String,Array,Object,Map,Promise,AbortSignal,localStorage:{getItem:()=>null,setItem(){}},fetch:path=>path==='/api/library/tree'?Promise.resolve({ok:true,json:async()=>({root:'/data/data',tree:null})}):new Promise(()=>{}),setTimeout(){},setInterval(){},requestAnimationFrame(){},devicePixelRatio:1};
 vm.createContext(ctx);
 for(const f of ['static/app.js','static/selection.js','static/robot_storage.js'])vm.runInContext(fs.readFileSync(f,'utf8'),ctx);
 (async()=>{
@@ -28,6 +34,8 @@ for(const f of ['static/app.js','static/selection.js','static/robot_storage.js']
  vm.runInContext("directoryTarget='conversion'",ctx);await ctx.browse('/data/conversion-input');await node('#useDir').handlers.click();
  assert.deepEqual(conversionScopes,['/data/data']);assert(requests.slice(beforeConversion).every(r=>r.path.startsWith('/api/library/directories')&&r.body===null),'conversion picker only browses, never writes capture/export settings');
  assert.equal(node('#saveDir').value,priorSaveDir);assert.equal(vm.runInContext('selected',ctx),'retain-current');
+ let savedRefreshes=0;ctx.selectedRecordingTopics=()=>['/hal/joint_state'];ctx.refreshConversionAfterCapture=async()=>{savedRefreshes++};await node('#stopRecord').handlers.click();await node('#nextRecord').handlers.click();assert.equal(savedRefreshes,2,'stop and next immediately refresh conversion inputs');
+ const priorFetch=ctx.fetch;let finishBrowse;ctx.fetch=()=>new Promise(resolve=>{finishBrowse=resolve});const pendingBrowse=ctx.browse('/data/changed');assert.equal(node('#useDir').disabled,true,'directory cannot be selected before its contents arrive');finishBrowse({ok:true,json:async()=>({path:'/data/changed',parent:'/data',folders:[],free_gb:1})});await pendingBrowse;assert.equal(node('#useDir').disabled,false);ctx.fetch=priorFetch;
  const rate={dataset:{receiveRate:'/camera/head_color'}};
  lists.set('[data-receive-rate]',[rate]);s.recording.active=true;
  ctx.renderDataRates(s);assert.equal(rate.textContent,'30.0 Hz');

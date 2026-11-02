@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：平台离线回归测试：workflow。
+# 用法：在studio目录执行 python -m unittest tests.test_workflow（已配置依赖的Python）；使用模拟SDK/API，不运行真机任务。
+# 详细说明：../README.md
+
 import json,sys,tempfile,time,unittest,io,tarfile
 from pathlib import Path
 from unittest.mock import patch
@@ -25,10 +30,45 @@ class WorkflowTests(unittest.TestCase):
    self.assertEqual(state['result'],result);self.assertEqual(state['progress']['percent'],60)
    self.assertFalse(state['running']);self.assertEqual(state['error'],'missing source field')
    self.assertIsNone(w.Job('lerobot').status()['result'])
+ def test_restart_restores_latest_interrupted_job_instead_of_old_success(self):
+  import os
+  with tempfile.TemporaryDirectory() as td,patch.object(w,'RUNTIME',Path(td)):
+   older=Path(td)/'conversion_old';older.mkdir();old=older/'result.json';old.write_text('{"completed":true}');os.utime(old,(100,100))
+   newer=Path(td)/'conversion_new';newer.mkdir()
+   (newer/'command.json').write_text(json.dumps(['python','platform_convert.py','--dataset-path','/data/test1','--repo-id','local/test1','--task','move']))
+   progress=newer/'progress.json';progress.write_text('{"percent":56.11,"processed_frames":7812,"total_frames":16650}');os.utime(progress,(200,200));os.utime(newer/'command.json',(200,200))
+   state=w.Job('conversion',restore_latest=True).status()
+   self.assertEqual(state['run_dir'],str(newer));self.assertEqual(state['phase'],'已中断')
+   self.assertEqual(state['dataset_path'],'/data/test1');self.assertEqual(state['progress']['processed_frames'],7812)
+   self.assertIsNone(state['result']);self.assertIn('中断',state['error'])
+ def test_stopped_job_is_restored_as_stopped_after_restart(self):
+  with tempfile.TemporaryDirectory() as td,patch.object(w,'RUNTIME',Path(td)),patch.object(w,'BASE',Path(td)):
+   first=w.Job('test');first.start(lambda f:[sys.executable,'-c','import time;time.sleep(30)'])
+   first.stop();first.process.wait(timeout=3)
+   later=w.Job('test',restore_latest=True).status()
+   self.assertEqual(later['phase'],'已停止');self.assertFalse(later['running']);self.assertEqual(later['error'],'')
+ def test_empty_dataset_explains_interrupted_source_and_has_resume_arguments(self):
+  from fastapi import FastAPI
+  from fastapi.testclient import TestClient
+  api=FastAPI();api.include_router(w.router);client=TestClient(api)
+  with tempfile.TemporaryDirectory() as td,patch.object(w,'RUNTIME',Path(td)),patch.object(w.conversion,'status',return_value={'running':False}):
+   folder=Path(td)/'conversion_old';folder.mkdir()
+   repo=w.internal_repo_id('test1')
+   (folder/'command.json').write_text(json.dumps(['python','platform_convert.py','--dataset-path','/data/train/test1','--repo-id',repo,'--task','11','--input-format','factory']))
+   (folder/'inputs.json').write_text('["/data/record/original"]')
+   (folder/'progress.json').write_text('{"processed_frames":7812,"total_frames":16650,"percent":56.11}')
+   with patch.object(w,'info',return_value={'episodes':[],'total_episodes':0}):result=client.get('/api/lerobot/episodes',params={'dataset':'/data/train/test1'}).json()
+   status=result['conversion_status'];self.assertEqual(status['phase'],'已中断');self.assertEqual(status['progress']['processed_frames'],7812)
+   self.assertEqual(status['resume_request'],{'episode_paths':['/data/record/original'],'task':'11','input_format':'factory','workers':2,'threads':2,'resume':True,'output_dir':'/data/train','dataset_name':'test1'})
  def test_directory_catalog_does_not_run_sdk(self):
   with tempfile.TemporaryDirectory() as td:
    p=Path(td)/'local/test/meta';p.mkdir(parents=True);(p/'info.json').write_text(json.dumps({'fps':30,'total_episodes':2}))
    self.assertEqual(w.datasets(td)['datasets'][0]['total_episodes'],2)
+ def test_catalog_ignores_hidden_parallel_workspaces(self):
+  with tempfile.TemporaryDirectory() as td:
+   for name in ['finished','.unfinished.parallel-temp/0/dataset']:
+    p=Path(td)/name/'meta';p.mkdir(parents=True);(p/'info.json').write_text('{"total_episodes":1,"fps":30}')
+   self.assertEqual([row['name'] for row in w.datasets(td)['datasets']],['finished'])
  def test_bad_repo_id_rejected_before_process(self):
   with tempfile.TemporaryDirectory() as td:
    with self.assertRaises(ValueError):w.convert({'source_dir':td,'output_dir':td,'repo_id':'../bad','task':'test'})
@@ -99,6 +139,18 @@ class WorkflowDirectoryTests(unittest.TestCase):
   body={'source_dir':str(self.base),'dataset_name':'任务A','task':'test','resume':True}
   self.assertIn('--resume',self.start_conversion(body)['command'])
   body.pop('resume');self.assertNotIn('--resume',self.start_conversion(body)['command'])
+ def test_factory_format_passes_to_batch_worker(self):
+  command=self.start_conversion({'source_dir':str(self.base),'dataset_name':'native','task':'移动','input_format':'factory'})['command']
+  self.assertEqual(command[command.index('--input-format')+1],'factory')
+  self.assertEqual(command[command.index('--workers')+1],'2')
+  self.assertEqual(command[command.index('--threads')+1],'2')
+ def test_native_replay_only_starts_on_explicit_endpoint(self):
+  folder=self.base/'native/record';folder.mkdir(parents=True);(folder/'-genie-bundle_data.pbdat').write_bytes(b'raw')
+  captured={}
+  def start(command,paths):captured['command']=command(self.base);return {'running':True}
+  with patch.object(w.replay,'start',side_effect=start),patch.object(w,'motion_available'):
+   response=self.client.post('/api/native/replay/start',json={'source':str(folder.parent)})
+  self.assertEqual(response.status_code,200);self.assertIn('--native-recording',captured['command'])
  def test_result_folder_browser_stays_within_dataset_and_handles_failed_output(self):
   root=self.base/'empty_result';(root/'provenance').mkdir(parents=True)
   (root/'provenance/errors.jsonl').write_text('failure')

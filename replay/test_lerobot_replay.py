@@ -1,3 +1,10 @@
+# 使用说明
+# 用途：回放模块离线回归测试，使用临时样例和Fake SDK，不发送真机动作。
+# 使用：在replay目录运行 ../conversion/.venv/bin/python -m unittest -v test_lerobot_replay。
+# 依赖：conversion/extra_deps及对应测试fixture；支持整目录unittest发现。
+# 多文件使用说明：replay/README.md、README_clamped_smooth.md；总测试索引见../tests/README.md。
+#
+"""模拟SDK回归：原目标/NULL时间轴、逐帧发送、停止与SDK错误。"""
 import json
 import math
 from pathlib import Path
@@ -19,13 +26,17 @@ class Clock:
 
 
 class FakeRobot:
-    def __init__(self): self.requests = []; self.mode = None
+    def __init__(self): self.requests = []; self.mode = None; self.initial_values = {}
     def set_control_mode(self, mode): self.mode = mode; return 0
     def joint_servo_control(self, request, low):
         self.requests.append((request.joint_names[:], request.joint_positions[:], request.control_period, low))
         return 9 if len(self.requests) == 2 else 0
-    def get_joint_states(self): return {'states': [{'name':'left', 'motor_position':1.5}]}
+    def get_joint_states(self): return {'states': [{'name': n, 'motor_position': q} for n, q in (self.initial_values or {'left': 1.5}).items()]}
     def get_end_state(self):
+        if 'idx31_gripper_l_inner_joint1' in self.initial_values:
+            return {side: {'names': [name], 'end_states': [{'position': self.initial_values[name]}]}
+                    for side, name in [('left_end_state', 'idx31_gripper_l_inner_joint1'),
+                                       ('right_end_state', 'idx71_gripper_r_inner_joint1')]}
         return {'left_end_state': {'names':['grip'], 'end_states':[{'position':.025}]},
                 'right_end_state': {'names':[], 'end_states':[]}}
 
@@ -106,7 +117,7 @@ class TestReplay(unittest.TestCase):
         self.assertEqual(lines[0]['sdk_api'], 'mode-id')
         self.assertEqual(next(x for x in lines if x['type'] == 'setup')['sdk_api'], 'mode-id')
 
-    def test_held_sampling_sends_original_action_and_continues_sdk_error(self):
+    def test_original_targets_hold_and_sdk_error_does_not_change_later_frames(self):
         episode = {'path':'example.parquet', 'episode':0, 'fps':30, 'names':['left','grip'],
                    'times':[0., .03, .06], 'actions':[[1., 0.],[2., .01],[3., .02]],
                    'duration_s': .06 + 1/30,
@@ -126,10 +137,10 @@ class TestReplay(unittest.TestCase):
         self.assertEqual((robot.mode.input_source, robot.mode.target,
                           robot.mode.control_mode, robot.mode.safe_mode), (1, 2, 3, 4))
         self.assertGreater(len(robot.requests), 2)
-        self.assertEqual(robot.requests[0], (['left','grip'], [1.,0.], .02, False))
+        self.assertEqual(robot.requests[0], (['left','grip'], [1.,0.], .01, False))
         self.assertEqual(robot.requests[-1][1], [3.,.02])
-        self.assertTrue(all(row[1] in episode['actions'] for row in robot.requests))
-        steps = [line for line in lines if line['type']=='step']
+        self.assertEqual(episode['actions'], [[1.,0.], [2.,.01], [3.,.02]])
+        steps = [line for line in lines if line['type']=='step' and line['phase']=='正在回放']
         samples = [line for line in lines if line['type'] == 'feedback']
         self.assertTrue(any(line['values'] == [1.5, .025] for line in samples))
         self.assertEqual(steps[0]['recorded_observation'], [101.,.025])
@@ -149,7 +160,10 @@ class TestReplay(unittest.TestCase):
                    'times':[i/30 for i in range(6)], 'actions':[[float(i), .01] for i in range(6)],
                    'duration_s': .2, 'recorded_states':[[0.,0.]]*6}
         class SlowRobot(FakeRobot):
+            calls = 0
             def get_joint_states(self):
+                self.calls += 1
+                if self.calls == 1: return {'states':[{'name':'left', 'motor_position':float('nan')}]} 
                 time.sleep(.08)
                 return {'states':[{'name':'left', 'motor_position':float('nan')}]}
         robot = SlowRobot()
@@ -164,11 +178,11 @@ class TestReplay(unittest.TestCase):
             lines = [json.loads(line) for line in path.read_text().splitlines()]
         self.assertEqual(result['unsent_frame_count'], 0)
         self.assertGreaterEqual(result['send_hz'], 95)
-        self.assertEqual({x[1][0] for x in robot.requests}, set(float(i) for i in range(6)))
+        self.assertEqual(robot.requests[-1][1][0], 5.)
         samples = [line for line in lines if line['type'] == 'feedback']
         self.assertTrue(any(s['values'] == [None, .025] and s['nonfinite_names'] == ['left'] for s in samples))
 
-    def test_slow_servo_reports_skipped_frames(self):
+    def test_slow_servo_keeps_every_original_frame_in_order(self):
         clock = Clock()
         episode = {'path':'example.parquet', 'episode':0, 'fps':30, 'names':['left'],
                    'times':[i/30 for i in range(30)], 'actions':[[float(i)] for i in range(30)],
@@ -185,10 +199,12 @@ class TestReplay(unittest.TestCase):
             Target=SimpleNamespace(TARGET_ARMS=2), ControlMode=SimpleNamespace(CTRL_JOINT_POSITION=3),
             SafeMode=SimpleNamespace(SAFE_NORMAL=4))
         with TemporaryDirectory() as tmp:
-            result = replay.execute(episode, {}, Path(tmp)/'trace.jsonl', sdk, clock, handoff_fn=lambda _: {})
-        sent = {int(r[1][0]) for r in robot.requests}
+            trace = Path(tmp)/'trace.jsonl'
+            result = replay.execute(episode, {}, trace, sdk, clock, handoff_fn=lambda _: {})
+            sent = {row['frame_index'] for row in map(json.loads, trace.read_text().splitlines()) if row['type']=='step' and row['phase']=='正在回放'}
         self.assertEqual(result['unsent_frame_indices'], [i for i in range(30) if i not in sent])
-        self.assertGreater(result['unsent_frame_count'], 0)
+        self.assertEqual(result['unsent_frame_count'], 0)
+        self.assertEqual([r[1][0] for r in robot.requests],list(map(float,range(30))))
         self.assertLess(result['send_hz'], 20)
 
 

@@ -1,3 +1,5 @@
+> 历史资料：保留原版转换器/旧部署与验收上下文。当前机器人统一目录为 `/data/r2_datacp`，日常命令请用 [使用说明](../../../使用说明.md)，不要照旧路径启动。
+
 # 机器人 Linux 数据格式转换部署
 
 转换工具已部署到机器人 `/data/r2_lerobot/tool`，使用独立环境 `/data/r2_lerobot/tool/.venv`，机器人验收环境为 Ubuntu 22.04、aarch64、Python 3.10.12。转换使用 CPU，不需要机器人 SDK。采集流程和转换流程彼此独立；操作入口见 [ROBOT_QUICKSTART.md](ROBOT_QUICKSTART.md)。

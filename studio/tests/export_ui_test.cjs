@@ -1,3 +1,9 @@
+/*
+使用说明
+用途：前端离线回归测试：export界面交互。
+用法：在studio目录执行 node tests/export_ui_test.cjs；使用虚拟DOM/API，不启动网页或机器人任务。
+详细说明：../README.md
+*/
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const elements=new Map(),links=[],requests=[],writes=[],mkdirs=[];
 function node(k){if(!elements.has(k))elements.set(k,{textContent:'',innerHTML:'',value:'',disabled:false,hidden:false,handlers:{},addEventListener(t,f){this.handlers[t]=f},showModal(){this.open=true},close(){this.open=false}});return elements.get(k)}
@@ -14,7 +20,7 @@ const existingGroup={getDirectoryHandle:async(name,opts)=>{if(!opts)throw notFou
 const destination={name:'Chosen-folder',getDirectoryHandle:async(name,opts)=>{assert.equal(name,'A');return existingGroup}};
 const groupInputs=['/data/data','/data/data/A','/data/data/B'].map(path=>({dataset:{exportGroup:path,empty:'false'},handlers:{},addEventListener(k,f){this.handlers[k]=f}}));
 const openFolders=[{dataset:{libraryFolder:'/data/data'},open:true,addEventListener(){}},{dataset:{libraryFolder:'/data/data/A'},open:false,addEventListener(){}}];
-const ctx={console,Map,Set,Array,Object,String,Math,Date,JSON,Promise,Uint8Array,AbortController,DOMException,performance,
+const ctx={URLSearchParams,console,Map,Set,Array,Object,String,Math,Date,JSON,Promise,Uint8Array,AbortController,DOMException,performance,
  navigator:{platform:'MacIntel'},window:{showDirectoryPicker:async()=>destination},current:{data_dir:'/data/data/A'},selected:'episode_1_time',
  document:{querySelectorAll:s=>s==='[data-library-folder]'?openFolders:s==='[data-export-group]'||s==='[data-export-file],[data-export-group]'?groupInputs:[],body:{appendChild(){}},createElement:()=>({click(){links.push({href:this.href,download:this.download})},remove(){}})},
  $:node,fmt:(n,d)=>Number(n).toFixed(d),esc:String,notice(){},setInterval(){},setSource:s=>requests.push({source:s}),refreshFiles:async()=>requests.push({refresh:true}),

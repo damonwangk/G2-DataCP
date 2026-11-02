@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：采集服务HTTP客户端、远端状态与历史已完成文件传输逻辑。
+# 用法：内部模块；当前网页使用 LocalStorage 子类连接本机服务，导出走网页数据导出功能。
+# 详细说明：采集与预览使用说明.md
+
 """Ubuntu control-plane client and completed-file transfer; never records live packets."""
 import json,re,shutil,threading,time,uuid,urllib.request,urllib.error
 from pathlib import Path

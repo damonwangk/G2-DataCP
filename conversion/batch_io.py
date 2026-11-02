@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：单写入器事务、断点恢复与已完成来源索引。
+# 使用：由 raw_convert.py / parallel_convert.py 导入，不独立启动。
+# 多文件使用说明：README.md 的“恢复与完成判据”。
+#
 """Crash recovery for the converter's single-writer LeRobot dataset."""
 import json
 from pathlib import Path

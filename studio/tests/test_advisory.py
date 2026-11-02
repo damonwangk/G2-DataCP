@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：平台离线回归测试：advisory。
+# 用法：在studio目录执行 python -m unittest tests.test_advisory（已配置依赖的Python）；使用模拟SDK/API，不运行真机任务。
+# 详细说明：../README.md
+
 import copy
 import json
 import tempfile

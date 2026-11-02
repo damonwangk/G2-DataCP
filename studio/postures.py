@@ -1,4 +1,9 @@
-"""Named posture snapshots: 22 body/head/arm joints + two grippers; no chassis state."""
+# 使用说明
+# 用途：22个本体关节与双夹爪实测姿态的保存、加载、计划和可恢复删除。
+# 用法：内部模块；网页保存/核对/恢复姿态或 /api/poses 接口；恢复是显式动作，保存/计划不发动作。
+# 详细说明：回放与姿态使用说明.md
+
+"""保存/读取/删除具名姿态：22 个本体关节及双夹爪的实测位置，不包含底盘。"""
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import hashlib
@@ -42,6 +47,7 @@ def capture(latest,label):
             'names':NAMES,'positions':[values[n] for n in NAMES],
             'joint_count':22,'gripper_types':types,'joint_units':'rad','gripper_units':'native',
             'source_ns':stamps,'source_clock':'robot native','position_field':'motor_position',
+            'gripper_position_field':'end_state[].position (measured feedback)',
             'scope':['body','head','left_arm','right_arm','left_gripper','right_gripper']}
 
 
@@ -83,6 +89,15 @@ def list_poses():
     for p in sorted(POSES.glob('*.mcap'),reverse=True):
         pose=load_pose(p);result.append(dict(pose,id=p.stem,path=str(p)))
     return result
+
+
+def delete_pose(identity):
+    """从姿态列表移除文件；原 MCAP 原样移至 .deleted，便于撤销误删。"""
+    path=pose_path(identity);pose=load_pose(path)
+    deleted=POSES/'.deleted';deleted.mkdir(exist_ok=True)
+    destination=deleted/(identity+'__'+uuid.uuid4().hex[:8]+'.mcap')
+    path.rename(destination)
+    return {'deleted':True,'id':identity,'label':pose['label'],'archived_path':str(destination)}
 
 
 def pose_plan(path,latest):

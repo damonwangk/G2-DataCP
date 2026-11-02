@@ -1,3 +1,9 @@
+/*
+使用说明
+用途：原始字段、双夹爪、关节、RGB/MCAP结构的只读检查面板。
+用法：由 app.py 提供的工作台页面加载，浏览器访问 http://机器人IP:18769/；不作为独立脚本启动。
+详细说明：../采集与预览使用说明.md
+*/
 'use strict';
 let inspectTab='grippers',inspectFrozen=false,inspectCache=null,inspectContract=null,inspectPaintAt=0,inspectJoint=null;
 const inspectViews={grippers:'#inspectGrippers',joints:'#inspectJoints',images:'#inspectImages',other:'#inspectOther'};

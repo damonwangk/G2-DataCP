@@ -1,3 +1,9 @@
+# 使用说明
+# 用途：平台离线回归测试：sdk_control。
+# 用法：在studio目录执行 python -m unittest tests.test_sdk_control（已配置依赖的Python）；使用模拟SDK/API，不运行真机任务。
+# 详细说明：../README.md
+
+"""用模拟SDK核对控制模式、原指令发送及错误记录。"""
 import unittest
 from types import SimpleNamespace as NS
 from sdk_worker import select_gdk_control
@@ -19,7 +25,10 @@ class SDKControl(unittest.TestCase):
         class Traj:
             names=['body','left_grip','right_grip'];joint_count=1;duration=.18;initial=[0.,0.,0.]
             gripper_types={'/hal/left_ee_data':1,'/hal/right_ee_data':1}
-            def __init__(self,*args):pass
+            def __init__(self,*args):
+                self.episode={'path':'fake.mcap','episode':0,'fps':30,'names':self.names,'times':[0.,.1,.18],
+                    'actions':[[0.,.025,1.632],[.1,.025,.025],[.18,.025,.025]],
+                    'recorded_states':[[0.,0.,0.]]*3,'duration_s':.2}
             def at(self,t):return [t,.025,1.632 if t<.10 else .025]
         class Robot:
             def __init__(self):self.q=[0.,0.,0.];self.sent=[];self.rejected=False;self.stamp=0
@@ -47,18 +56,38 @@ class SDKControl(unittest.TestCase):
             self.assertEqual(robot.sent[-1][2],.025);self.assertGreater(out['sample_count'],0)
 
     def test_vendor_handoff_requests_pending_and_propagates_failure(self):
-        import grpc
+        import grpc,json,os,tempfile
+        from pathlib import Path
         from unittest.mock import patch,MagicMock
-        from control_session import release_teleop
+        import control_session
+        from tests.synthetic_fixtures import synthetic_operator_package
+        package,p=synthetic_operator_package()
         channel=MagicMock();channel.__enter__.return_value=channel
-        call=MagicMock(return_value=NS(result=True,result_desception='OK'))
+        call=MagicMock(return_value=p.OperatorEventReply(result=True,result_desception='OK'))
         channel.unary_unary.return_value=call
-        with patch.object(grpc,'insecure_channel',return_value=channel):
-            self.assertTrue(release_teleop()['result'])
-            request=call.call_args.args[0]
-            self.assertEqual(request.operator_event,2)
-            self.assertEqual(request.operator_event_detail,24)
-            self.assertEqual(request.robot_aid,'g2a0004bc02187')
-            self.assertEqual(channel.unary_unary.call_args.args[0],'/rh_msgs_v4.OperatorEventService/OperatorEventService')
-            call.return_value=NS(result=False,result_desception='not accepted')
-            with self.assertRaisesRegex(RuntimeError,'not accepted'):release_teleop()
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'config').mkdir()
+            config={'host':'synthetic-robot.local','operator_port':12345,'robot_aid':'synthetic-g2'}
+            (root/'config/robot_control.json').write_text(json.dumps(config))
+            with patch.object(control_session,'ROOT',root), \
+                 patch.dict(os.environ,{'R2_HOST':config['host']}), \
+                 patch.dict('sys.modules',{'rh_msgs_v4_pb':package}), \
+                 patch.object(grpc,'insecure_channel',return_value=channel) as connect:
+                self.assertTrue(control_session.release_teleop()['result'])
+                connect.assert_called_once_with('synthetic-robot.local:12345')
+                request=call.call_args.args[0]
+                self.assertEqual(request.operator_event,2)
+                self.assertEqual(request.operator_event_detail,24)
+                self.assertEqual(request.robot_aid,'synthetic-g2')
+                self.assertEqual(request.operator_device,'r2_mcap_studio')
+                self.assertGreater(request.timestamp,0)
+                self.assertEqual(call.call_args.kwargs['timeout'],5)
+                self.assertEqual(channel.unary_unary.call_args.args[0],'/rh_msgs_v4.OperatorEventService/OperatorEventService')
+                serializers=channel.unary_unary.call_args.kwargs
+                decoded=p.OperatorEventRequest.FromString(serializers['request_serializer'](request))
+                self.assertEqual(decoded,request)
+                reply=p.OperatorEventReply(result=True,result_desception='serialized mock')
+                self.assertEqual(serializers['response_deserializer'](reply.SerializeToString()),reply)
+                call.return_value=p.OperatorEventReply(result=False,result_desception='not accepted')
+                with self.assertRaisesRegex(RuntimeError,'not accepted'):
+                    control_session.release_teleop()

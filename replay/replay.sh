@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# 使用说明
+# 用途：原回放的Linux环境入口，设置SDK动态库和转换依赖后启动lerobot_replay.py。
+# 使用：在项目根目录运行 replay/replay.sh --dataset /path/to/dataset --episode 0。
+# 原生记录：replay/replay.sh --native-recording /data/record/full_xxx。
+# 检查：在以上命令后加 --dry-run；不加载SDK、不发动作。
+# 实际运行会初始化SDK并发送原目标；本入口不做限幅或平滑。
+# 多文件使用说明：replay/README.md；限幅平滑副本见 README_clamped_smooth.md。
+#
 set -euo pipefail
 root="$(cd "$(dirname "$0")" && pwd)"
 suite="$(dirname "$root")"

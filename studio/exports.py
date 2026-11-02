@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：已完成MCAP/原生记录的逐文件下载与TAR流导出API。
+# 用法：内部路由由 app.py 挂载；网页导出或 datacp export-mcap/export-native，保留机器人源文件字节。
+# 详细说明：数据管理与转换调度使用说明.md
+
 """Download completed robot files unchanged, individually or as a streaming TAR."""
 from pathlib import Path
 import math
@@ -32,7 +37,18 @@ def client(request: Request):
 
 @router.post('/prepare')
 def prepare(body: dict = Body(...)):
-    if 'episode_paths' in body:
+    if body.get('input_format')=='factory':
+        root=Path(body.get('root','/data/record')).expanduser().resolve()
+        chosen=[Path(p).expanduser().resolve() for p in dict.fromkeys(body.get('episode_paths',[]))]
+        if not chosen:raise ValueError('请选择原生采集记录')
+        paths=[]
+        for folder in chosen:
+            if not folder.is_relative_to(root) or not (folder/'record/-genie-bundle_data.pbdat').is_file():raise ValueError('请选择当前目录中的原生采集记录')
+            prefix=Path(root.name)/(folder.relative_to(root) if folder!=root else Path())
+            for file in sorted(folder.rglob('*')):
+                if file.is_file() and not any(p.startswith('.') for p in file.relative_to(folder).parts) and file.resolve().is_relative_to(folder):paths.append((file,(prefix/file.relative_to(folder)).as_posix()))
+        names=[p.name for p in chosen]
+    elif 'episode_paths' in body:
         chosen = library.resolve_episodes(body['episode_paths'])
         names = [p.name for p in chosen]
         paths = library.export_files([str(p) for p in chosen])

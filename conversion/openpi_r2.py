@@ -1,7 +1,13 @@
-"""R2 16-axis data adapters for Physical-Intelligence/openpi.
+# 使用说明
+# 用途：OpenPI的24维R2数据变换适配，不是机器人执行程序。
+# 使用：复制到已有OpenPI的 src/openpi/policies/r2_policy.py，并按接入文档注册。
+# 多文件使用说明：../docs/reference/OPENPI.md；NULL训练策略需另行明确，本模块不补值。
+#
+"""R2 24-axis data adapters for Physical-Intelligence/openpi.
 
-Copy to openpi/src/openpi/policies/r2_policy.py; see OPENPI.md for registration.
-Order: left joints 1..7, left gripper, right joints 1..7, right gripper.
+Copy to openpi/src/openpi/policies/r2_policy.py; see ../docs/reference/OPENPI.md for registration.
+Order: waist 5, head 3, left arm 7, left gripper, right arm 7, right gripper.
+Nullable raw datasets require an explicit training policy; this adapter never fills nulls.
 Default actions remain absolute targets in the converter's documented native units.
 """
 
@@ -12,7 +18,7 @@ import numpy as np
 from openpi import transforms
 
 
-ACTION_DIM = 16
+ACTION_DIM = 24
 CAMERAS = ("head_color", "hand_left_color", "hand_right_color")
 MODEL_CAMERAS = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
 
@@ -91,11 +97,11 @@ class R2TransformFactory:
 
     def __call__(self, model_config) -> transforms.Group:
         if model_config.action_dim < ACTION_DIM:
-            raise ValueError("Model action_dim is smaller than R2's 16-dimensional action")
+            raise ValueError("Model action_dim is smaller than R2's 24-dimensional action")
         group = transforms.Group(inputs=[R2Inputs()], outputs=[R2Outputs()])
         if self.use_delta_joint_actions:
             # Seven arm joints per side are relative to the current state. Both grippers stay absolute.
-            mask = transforms.make_bool_mask(7, -1, 7, -1)
+            mask = transforms.make_bool_mask(15, -1, 7, -1)
             group = group.push(
                 inputs=[transforms.DeltaActions(mask)],
                 outputs=[transforms.AbsoluteActions(mask)],

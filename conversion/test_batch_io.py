@@ -1,3 +1,9 @@
+# 使用说明
+# 用途：事务恢复、元数据和provenance一致性离线回归。
+# 从项目根目录运行：./conversion/.venv/bin/python -m unittest discover -s conversion -p "test_batch_io.py" -v
+# 仅使用临时目录、合成数据或Fake依赖，不启动真实SDK、不发送机器人动作。
+# 测试分组、依赖环境及历史兼容范围见 README.md。
+#
 """Single-segment rollback protects committed data, metadata and provenance."""
 import json
 from pathlib import Path
@@ -149,10 +155,11 @@ class EmptyDatasetResumeTests(unittest.TestCase):
                 max_camera_age_ms=50.0, max_gap_ms=50.0, resume=False, skip_errors=False)
             # Abort after official dataset creation but before any segment save.
             with patch.object(convert_r2, 'discover', return_value=[source]), \
+                 patch.object(convert_r2, 'source_files', return_value=[]), \
                  patch.object(convert_r2, 'make_plan', side_effect=RuntimeError('planned preflight failure')):
                 with self.assertRaisesRegex(RuntimeError, 'planned preflight failure'):
                     convert_r2.convert(args)
-                self.assertEqual(json.loads((output / 'meta/info.json').read_text())['total_episodes'], 0)
+                self.assertFalse(output.exists())
                 args.resume = True
                 with self.assertRaisesRegex(RuntimeError, 'planned preflight failure'):
                     convert_r2.convert(args)

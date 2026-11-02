@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：24位置的SDK范围显示提醒与近期超限统计。
+# 用法：内部模块；网页SDK范围面板或 /api/state 查看；不改数据、不裁剪位置、不拦截采集。
+# 详细说明：回放与姿态使用说明.md
+
 """Display-only SDK bounds. Does not change or reject recorder packets."""
 import hashlib
 import json

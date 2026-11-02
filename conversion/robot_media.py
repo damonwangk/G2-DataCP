@@ -1,9 +1,33 @@
+# 使用说明
+# 用途：历史图像写入/CPU有界视频兼容辅助，供兼容调用与离线测试使用。
+# 使用：作为库导入；当前MP4主链使用 video_mp4.py，不直接运行本文件。
+# 多文件使用说明：README.md 的文件职责与历史兼容模块。
+#
 """CPU-bounded video encoding for the pinned LeRobot v2.1 writer."""
 from pathlib import Path
 
 import av
 import numpy as np
 from PIL import Image
+from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+import threading
+
+def fast_png(image,fpath):
+    if isinstance(image,np.ndarray):image=Image.fromarray(image)
+    image.save(fpath,format='PNG',compress_level=1)
+
+class ImageWriter:
+    def __init__(self,threads):
+        self.pool=ThreadPoolExecutor(max_workers=threads);self.pending=deque();self.limit=threads*2
+    def save_image(self,image,fpath):
+        self.pending.append(self.pool.submit(fast_png,image,fpath))
+        if len(self.pending)>=self.limit:self.pending.popleft().result()
+    def wait_until_done(self):
+        while self.pending:self.pending.popleft().result()
+    def stop(self):
+        try:self.wait_until_done()
+        finally:self.pool.shutdown()
 
 
 def _validate_codec(codec, threads):
@@ -64,18 +88,43 @@ def bounded_dataset_class(base_class, codec="h264", threads=1, progress=None):
     _validate_codec(codec, threads)
 
     class BoundedDataset(base_class):
+        def _save_image(self,image,fpath):
+            # These PNGs are temporary video inputs. Compression changes bytes,
+            # not pixels; avoid spending CPU on files discarded after encoding.
+            if self.image_writer is None and threads>1:self.image_writer=ImageWriter(threads)
+            if self.image_writer is None:
+                if isinstance(image,np.ndarray) and image.dtype==np.uint8 and image.ndim==3 and image.shape[2]==3:
+                    Image.fromarray(image).save(fpath,format='PNG',compress_level=1)
+                    return
+                if isinstance(image,Image.Image):
+                    image.save(fpath,format='PNG',compress_level=1)
+                    return
+            return super()._save_image(image,fpath)
+
         def encode_episode_videos(self, episode_index):
             video_paths = {}
-            for camera_index,key in enumerate(self.meta.video_keys):
+            fractions={i:0. for i,_ in enumerate(self.meta.video_keys)};progress_lock=threading.Lock()
+            def notify(index,done,total,key):
+                if progress:
+                    with progress_lock:
+                        fractions[index]=done/total
+                        progress(sum(fractions.values())/len(fractions),key)
+            def encode(item):
+                camera_index,key=item
                 video_path = self.root / self.meta.get_video_file_path(episode_index, key)
-                video_paths[key] = str(video_path)
                 if video_path.is_file():
-                    continue
+                    return key,str(video_path)
                 image_dir = self._get_image_file_path(
                     episode_index=episode_index, image_key=key, frame_index=0
                 ).parent
-                callback=(lambda done,total:progress((camera_index+done/total)/len(self.meta.video_keys),key)) if progress else None
-                encode_images(image_dir, video_path, self.fps, codec, threads, callback)
+                callback=lambda done,total:notify(camera_index,done,total,key)
+                encode_images(image_dir, video_path, self.fps, codec, 1 if threads>1 else threads, callback)
+                return key,str(video_path)
+            if threads>1:
+                with ThreadPoolExecutor(max_workers=threads) as pool:video_paths.update(pool.map(encode,enumerate(self.meta.video_keys)))
+            else:
+                for item in enumerate(self.meta.video_keys):
+                    key,path=encode(item);video_paths[key]=path
             return video_paths
 
     return BoundedDataset

@@ -1,116 +1,154 @@
-> 平台 `raw.mcap` 的单条/批量转换入口与命令见 [PLATFORM_MCAP.md](PLATFORM_MCAP.md)。以下保留原厂 bundle 转换说明。
+# 原始记录转换、并行处理与环境工具
 
-# G2 / R2 采集目录 → π0.5 LeRobot 批量转换
+本目录把厂商原生 `full_*` 目录或自采 MCAP 转成 **LeRobot v2.1 MP4 视频数据集**。两类输入共用24维名称、真实头部帧主轴和原值保留规则。下列命令均从项目根目录执行，例如 G2 的 `/data/r2_datacp`；由操作者手动启动。转换不加载运动 SDK，也不启动或停止采集。
 
-**已部署到机器人 `/data/r2_lerobot/tool`，启动见 [ROBOT_QUICKSTART.md](ROBOT_QUICKSTART.md)。** 本项目只提供格式转换，不依赖机器人 SDK。独立环境为 ARM64 / Python 3.10；不要复制 Mac 的 `.venv`。机器人入口只转换生产端已完结标记的目录。
+输入话题、名称、NULL和时间关联细节集中在 [PLATFORM_MCAP.md](PLATFORM_MCAP.md)；本页负责安装、运行、输出、恢复和文件职责。[项目使用说明](../使用说明.md)负责整体工作台入口，批处理说明（见部署系统原位置）负责每条full独立的数据集作业及后续传输，二者不要混用参数。
 
-入口是 `convert_r2.py`。输入为**已经解压的 episode 目录或其父目录**，递归发现采集系统的 `record/-genie-bundle_data.pbdat`，支持连续处理 1000 条及以上目录。一次只规划、解码一个原始 episode，保存后释放图像和数据表；不会把全部视频载入内存。没有硬编码这两份样例的目录名、任务编号或任务描述。
+## 功能与入口
 
-输出遵循 [Physical-Intelligence/openpi 官方转换路径](https://github.com/Physical-Intelligence/openpi#fine-tuning-base-models-on-your-own-data)，使用其固定的 LeRobot 提交 `0cf864870cf29f4738d3ade893e6fd13fbd7cdb5`，格式为 **v2.1**。这里的版本选择用于兼容官方 OpenPI；不要用最新版 v3 替换依赖。完整模型接入示例见 [OPENPI.md](OPENPI.md)。
+| 功能 | 推荐入口 | 配合的主要模块 |
+|---|---|---|
+| 单条或多条原始记录检查/转换 | `convert_r2.py` | `mcap_input.py`、`factory_input.py`、`recording_contract.py`、`raw_convert.py` |
+| JSON清单转换、进度及结果JSON | `run_platform.sh` → `platform_convert.py` | 上述模块、`conversion_progress.py` |
+| 多源并行后合并为同一个数据集 | `run_platform.sh --workers N` | `parallel_convert.py`、`batch_io.py` |
+| MP4封装/无损RGB写入 | 由转换入口调用 | `video_mp4.py` |
+| G2已完成记录的保守资源入口 | `run_robot.sh` | `convert_r2.py`、`episode_ready.py` |
+| 独立环境安装与依赖自查 | `install_robot.sh` / `install_linux_x86.sh`、`robot_env_check.py` | `requirements-*`、`vendor/`固定依赖 |
+| OpenPI 24维数据接口 | `openpi_r2.py`，作为库接入已有OpenPI | [OpenPI接入说明](../docs/reference/OPENPI.md) |
+| 历史格式解析和兼容验读 | `r2_raw.py`、`robot_media.py`、`validate_lerobot.py` | 下文“验证与历史兼容范围” |
 
-## 开始使用
+内部辅助模块没有独立启动命令。各自有Python/Shell文件开头的“使用说明”会给出所属功能和对应入口；测试文件头给出单项离线复验命令。`vendor/`、依赖环境及锁文件不作为功能入口编辑。
 
-机器人部署目录已安装独立 `.venv`。其他机器需先完成下文安装；在已安装环境的目录运行：
+## 环境安装与自查
+
+G2采用 Linux aarch64 / Python 3.10，代码与独立环境须放在 `/data` 下；需要 `uv`、基础Python和本目录的固定LeRobot wheel。下面的安装脚本会创建或更新独立虚拟环境，不应当作普通转换命令反复运行：
 
 ```bash
-source .venv/bin/activate
-
-# 同一批演示相同任务；任务文本由调用方提供。
-python convert_r2.py \
-  --input /path/to/recordings \
-  --output /path/to/lerobot/local/my_robot_tasks \
-  --repo-id local/my_robot_tasks \
-  --task '填写这批数据的任务指令'
+cd /data/r2_datacp
+./conversion/install_robot.sh
+./conversion/.venv/bin/python conversion/robot_env_check.py
 ```
 
-不同 episode 使用不同任务时，用 `--tasks-json /path/to/tasks.json` 替代 `--task`：
+G2脚本支持 `R2_CONVERTER_PYTHON`、`R2_CONVERTER_VENV` 指定基础解释器和环境。没有本地 `wheelhouse/` 时会安装所需依赖，需要相应网络访问。
+
+robot等 Linux x86_64 / Python 3.10 主机使用另一安装脚本，默认基础解释器为 `/home/robot/anaconda3/envs/g2/bin/python`，可通过 `R2_CONVERTER_PYTHON` 指定：
+
+```bash
+R2_CONVERTER_PYTHON=/usr/bin/python3.10 ./conversion/install_linux_x86.sh
+```
+
+它在 `conversion/.venv` 安装CPU版依赖。`robot_env_check.py`输出平台、包版本和HEVC/H.264编解码能力JSON，不读取录制数据。以上安装和自查都不表示实机回放已准备完成。
+
+## 单条/多条检查与转换
+
+纯读取检查，保留输入，不写数据集：
+
+```bash
+./conversion/.venv/bin/python conversion/convert_r2.py \
+  --input /data/record/full_xxx --input-format factory --inspect
+
+./conversion/.venv/bin/python conversion/convert_r2.py \
+  --input /path/to/raw.mcap --input-format mcap --inspect
+```
+
+正式转换到新目录：
+
+```bash
+./conversion/.venv/bin/python conversion/convert_r2.py \
+  --input /data/record/full_xxx --input-format factory \
+  --output /path/to/new_dataset --repo-id local/new_dataset \
+  --task 'pack the phone boxes' --threads 1
+```
+
+`--input`接受一个或多个MCAP文件、原生记录目录或待发现的父目录。`--input-format`可选 `factory`、`mcap`、`auto`。`--task`提供统一任务；直接Python入口也支持 `--tasks-json` 的“记录名→任务文本”映射。输出不能等于、包含或位于输入内部。
+
+`--fps`只接受30，它是LeRobot行号与MP4显示时间的索引频率，不会按固定时间网格补图或重采样原PTP。`--codec`、`--media`、`--image-size`、`--max-offset-ms`、`--max-camera-age-ms`、`--max-gap-ms`是保留的兼容参数，当前主写入器仍使用下述保真规则，不据它们缩放、过滤、插值或切换有损输出。`--min-free-gb`当前只解析/传递，主写入器未实现这个空间门槛，不能将参数值当作已执行的磁盘检查。
+
+## JSON清单、并行转换、进度与结果
+
+`inputs.json`必须是非空路径字符串数组，例如：
 
 ```json
-{
-  "episode_directory_000001": "第一类任务指令",
-  "episode_directory_000002": "第二类任务指令"
-}
+["/data/record/full_001", "/data/record/full_002"]
 ```
 
-JSON 的键是 episode 目录名。名字重复但任务不同的目录应分批执行或先整理目录名。
-
-中断后使用相同命令并加 `--resume`。已提交片段按源文件指纹跳过；未完成片段恢复后重做。可继续在同一个父目录添加新 episode，再续跑追加。源文件及已经转换的任务文字必须保持不变。
+将多条源记录合并为一个数据集，每条源记录对应一个episode：
 
 ```bash
-python convert_r2.py --input /path/to/recordings \
-  --output /path/to/lerobot/local/my_robot_tasks \
-  --repo-id local/my_robot_tasks --tasks-json /path/to/tasks.json \
-  --resume --skip-errors
+./conversion/run_platform.sh \
+  --inputs-json /path/to/inputs.json --input-format factory \
+  --dataset-path /path/to/new_mp4_dataset --repo-id local/new_mp4_dataset \
+  --task 'pack the phone boxes' --workers 4 --threads 1 \
+  --result /path/to/result.json --progress /path/to/progress.json
 ```
 
-`--skip-errors` 在转换阶段记录失败目录并继续其他目录；存在失败时最终退出码仍非零。任务映射必须覆盖全部待转换目录；缺少任务文本会在开始前报错，不能由 `--skip-errors` 跳过。明细在输出的 `provenance/errors.jsonl`。默认遇错即停止。禁止两个进程同时写同一个输出目录。
+`--dataset-path`就是数据集准确目录，不追加repo-id；兼容旧接口时可用 `--output-dir /path/to/root`，此时实际路径为`output-dir/repo-id`。`--workers`是同时处理不同源记录的进程数，`--threads`是每条记录的图像编码线程数；单条源记录不会再被拆成多个worker。各worker先产生临时分片，由主进程统一合并索引和元数据。
 
-## 新机器安装
+加 `--inspect`只检查源，但仍会写指定的结果/进度JSON。`progress.json`是原子更新的阶段/帧数/完成记录数；百分比不等于最终数据集已经提交完成。`result.json`提供完成标记、错误、实际数据集路径和episode/帧数，另须核查`provenance`及最终文件。
 
-通用环境使用 Python 3.10 / 3.11，支持 Linux / macOS；以下示例使用 3.11。当前机器人使用单独的 ARM64 / 3.10 部署配置。转换本身不需要 GPU。先安装数据处理依赖，再安装固定版本 LeRobot；分开安装避免拉入与转换无关的硬件和仿真依赖。
+这里的`--workers`不等于`batch_upload/start.sh --jobs`：后者管理每条full独立输出的数据集及其作业状态。当前任务的输入、目标目录、是否上传以批处理说明（见部署系统原位置）和实际命令为准；本转换器本身没有上传动作，不以历史云服务器路径作为默认操作指引。
+
+## 恢复与完成判据
+
+同一输出继续时加`--resume`。已有输出目录不加该参数会拒绝覆盖；已有PNG图像数据集不能混入当前MP4输出，请为MP4使用新目录。恢复会核对当前保存设置，并由事务日志恢复未完整提交的episode；串行写入器还核对已完成来源文件指纹和任务文本。原始采集文件不写回。
+
+完成后至少查看：`meta/info.json`、相应Parquet/MP4、`provenance/segments.jsonl`、`provenance/conversion.json`和`provenance/SUCCESS`，以及JSON入口的`result.json`与错误列表。`SUCCESS`表示本次要求的来源已转换，不等于`training_ready=true`；含NULL的数据仍保留，训练阶段的空值策略需要另行明确。
+
+`run_robot.sh`默认启用`--ready-only`，使用单线程和低CPU/IO优先级，不启停录制。它同时传入`--min-free-gb 20`，但该参数当前没有在主写入器中执行空间门槛判断。原生记录的ready标记只能由采集方确认所有写入者已关闭后创建：
 
 ```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements-runtime.txt
-python -m pip install --no-deps \
-  'lerobot @ git+https://github.com/huggingface/lerobot.git@0cf864870cf29f4738d3ade893e6fd13fbd7cdb5'
+# 会在原记录目录写标记；仅由确认采集已经结束的操作者执行。
+./conversion/.venv/bin/python conversion/episode_ready.py \
+  /data/record/full_xxx --confirm-finalized
+
+./conversion/run_robot.sh --input /data/record/full_xxx \
+  --output /path/to/new_dataset --repo-id local/new_dataset \
+  --task 'pack the phone boxes'
 ```
 
-本次实际运行环境另见 `requirements-validated.txt`。训练环境使用 OpenPI 自己的依赖锁，与这个独立转换环境分开。
+`episode_ready.py`沿用历史的bundle及三相机文件清单，不自动确认逐话题pbdat完整性，也不侦测采集进程是否结束。MCAP的ready检查只要求已完成文件名存在，文件闭合仍由采集方负责。普通`run_platform.sh`入口不自动要求ready标记。
 
-## 输入与输出字段
-
-本工具适配样例中已观察到的 **G2A / Dahuan 原始 bundle + H.265 + 时间索引**采集格式，不是任意机器人日志的通用解析器。后续同格式目录可直接使用。遇到未知 schema、关节名称或次序会报错。
-
-| LeRobot 字段 | 类型 | 采集字段 |
-|---|---|---|
-| `observation.state` | float32[16] | `state__joint__position` 与左右 `state__*_effector__position` |
-| `action` | float32[16] | 原始 `action__joint__position` 与左右 `action__*_effector__position` |
-| `observation.images.head_color` | RGB 视频 | `camera/head_color/` |
-| `observation.images.hand_left_color` | RGB 视频 | `camera/hand_left_color/` |
-| `observation.images.hand_right_color` | RGB 视频 | `camera/hand_right_color/` |
-| task metadata | 文本 | `--task` 或 `--tasks-json` |
-
-16 维顺序：左臂 7 关节、左夹爪、右臂 7 关节、右夹爪。保留绝对目标与原始数值，不二值化夹爪，不把 state 复制成 action。双臂按弧度保留；Dahuan 夹爪保存原生量值，未擅自换算为米或角度。头、腰、底盘、其他相机和深度等原始数据仍保留在输入目录，本训练视图不包含它们。
-
-默认按 30 Hz 均匀网格选择最近 bundle，匹配偏差上限 20 ms；每路图片按自己的源时间戳寻找原始 H.265 帧，腕部缓存帧年龄上限 50 ms。缺动作、缺媒体或时间断点会跳过并分段，因此输入一个录制目录可能产生多个 LeRobot episode；不会把间断两端直接拼起来。只转换格式和字段，不判断演示任务是否有价值。
-
-图像保持比例填充到 256×256，官方 API 写出数据集，CPU H.264 编码器写入 MP4；默认 `--threads 1`，编码方式可显式选择 `--codec libsvtav1`。视频经过有损压缩，像素不会逐字节等于原始 H.265 解码图像。需要无损存储解码后的 RGB 时使用 `--media image`，图片将嵌入 Parquet，磁盘开销较大。
+## 输出与视频保存规则
 
 ```text
-output/
+dataset/
+  meta/info.json
+  meta/episodes.jsonl
+  meta/episodes_stats.jsonl
+  meta/tasks.jsonl
   data/chunk-000/episode_000000.parquet
   videos/chunk-000/observation.images.head_color/episode_000000.mp4
   videos/chunk-000/observation.images.hand_left_color/episode_000000.mp4
   videos/chunk-000/observation.images.hand_right_color/episode_000000.mp4
-  meta/info.json
-  meta/tasks.jsonl
-  meta/episodes.jsonl
-  meta/episodes_stats.jsonl
-  provenance/frames.jsonl       # 每行的源 bundle、相机索引、原始纳秒时间
-  provenance/segments.jsonl     # 断点续跑已提交片段
-  provenance/conversion.json   # 转换设置与结果
-  provenance/SUCCESS           # 本轮全部输入成功才产生
+  provenance/settings.json
+  provenance/conversion.json
+  provenance/frames.jsonl
+  provenance/segments.jsonl
+  provenance/SUCCESS
 ```
 
-## 验证
+相机字段只包含源文件实际存在的相机；头部RGB必须存在。每相机/每episode独立MP4，`meta/info.json`中`codebase_version=v2.1`、相机`dtype=video`、`video_path`指向MP4。Parquet保存24维float64状态/动作、Arrow NULL、有效性和时间列，不内嵌PNG。
+
+原生H.265在原相机帧与训练表完整一一对应且无B帧时，直接把原HEVC码流封装MP4。MCAP JPEG、帧映射差异或带B帧原生输入，按训练表已选择的原帧解码后流式保存为H.264 RGB无损MP4；保留解码后的RGB像素，当前输出不再保存逐帧原JPEG字节或落地PNG。原分辨率、原选帧及24维数值不变，不插值、不补值、不缩图。
+
+MP4显示时间和LeRobot`timestamp`按行号/30匹配；原头部PTP原样保存为`source_timestamp_ns`。这些转换规则不改变原回放入口；独立限幅平滑副本的处理仅作用于其发送目标，见[回放说明](../replay/README_clamped_smooth.md)。
+
+## 验证与历史兼容范围
+
+离线测试使用合成源数据和临时目录，不初始化真实SDK：
 
 ```bash
-# 仅检查结构并列出转换计划，不产生数据集。
-python convert_r2.py --input /path/to/recordings --inspect
-
-# 单元测试：解析、字段映射、时间间断和恢复。
-python -m unittest discover -p 'test_*.py' -v
-
-# 用官方 LeRobot 加载器核查数值、图像及 50 步动作序列。
-python validate_lerobot.py \
-  --root /path/to/lerobot/local/my_robot_tasks \
-  --repo-id local/my_robot_tasks
+./conversion/.venv/bin/python -m unittest discover -s conversion -p 'test_*.py' -v
 ```
 
-验证脚本会读取原始输入目录，请保留原始目录路径。其逐行源值比对适合验收，转换器本身不依赖它。当前测试覆盖两份用户样例、续跑去重和实际进程中断恢复；尚未对真实 1000 条数据完成吞吐量压测。
+| 测试组 | 覆盖范围 |
+|---|---|
+| `test_mcap_input`、`test_factory_input`、`test_converter` | 原话题读取、同源输入一致性、NULL/PTP、图像尺寸与像素 |
+| `test_video_mp4`、`test_optional_camera_conversion` | 当前MP4封装/无损像素、原值、可选相机及固定版LeRobot验读 |
+| `test_parallel_conversion`、`test_batch_io`、`test_platform_paths` | 并行合并、断点恢复、事务提交与输出路径 |
+| `test_episode_ready`、`test_ready_filter` | ready标记及过滤边界 |
+| `test_r2_raw`、`test_robot_media` | 历史bundle/图像工具兼容行为 |
 
-转换期间输入应是已停止录制的稳定离线目录。恢复针对进程中断，不承诺突然断电或文件系统损坏时的持久化保证。默认视频编码与逐段提交按顺序执行，适合先稳定完成批量处理；耗时取决于视频长度、CPU 和磁盘速度。
+`validate_lerobot.py`仍逐行读取Parquet中内嵌图像`bytes`，适用于历史图像/PNG数据集，不是当前MP4数据集的通用验收入口。它需要provenance中的原始路径仍可访问。`r2_raw.py`提供历史bundle解析；当前原生转换读取逐话题pbdat。`robot_media.py`保留历史图像写入辅助，当前MP4主链由`video_mp4.py`实现。这些文件保留兼容用途，未在本次说明整合中改变执行逻辑。
 
-部署入口增加 `--ready-only`，读取 `.lerobot-ready.json` 后才解析源数据。标记应由采集程序在关闭所有写入后创建；普通离线格式样例仍可直接使用 `convert_r2.py`。早期版本的视频输出使用 AV1，如需继续追加，明确传入 `--codec libsvtav1 --resume`。
+历史验收记录见[MP4转换实现与验收](../docs/MP4转换实现与验收-20261031.md)和[归档说明](../docs/archive/README.md)。2026-10-31的49项robot回归及2750帧真实样例结论属于当时验收，当前环境状态需重新执行对应检查；本页不把历史测试当作当前机器人运动验证。

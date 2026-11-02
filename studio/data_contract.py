@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：原始Protobuf字段说明，供网页数据检查器展示。
+# 用法：内部模块；使用网页原始数据面板或 GET /api/data-contract 读取，不单独启动。
+# 详细说明：采集与预览使用说明.md
+
 """Read-only protobuf field descriptions for the acquisition inspector."""
 from google.protobuf.descriptor import FieldDescriptor as F
 

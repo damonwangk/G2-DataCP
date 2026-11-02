@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：采集通道目录、整话题选择及MCAP可回放名称清单。
+# 用法：内部模块，网页调用 /api/data/catalog 和文件contents接口；不单独启动。
+# 详细说明：采集与预览使用说明.md
+
 """Whole-topic recording selection and available motion data; raw bytes are untouched."""
 from native import SPECS
 LABELS={

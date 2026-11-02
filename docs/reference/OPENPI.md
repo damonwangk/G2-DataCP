@@ -1,3 +1,5 @@
+> 2026-10-31：磁盘保留float64、原分辨率和NULL。标准LeRobot训练loader会在内存转成float32，且含None的行会报错；本次不补值/删帧。只有另行明确空值训练规则后才能训练这些数据。`source_timestamp_ns`是原PTP，`timestamp`是30 Hz行索引；真实缺帧不会补图。
+
 # π0.5 官方 OpenPI 接入
 
 本适配以 2026-10-29 核对的 [Physical-Intelligence/openpi](https://github.com/Physical-Intelligence/openpi) API 为依据。
@@ -41,8 +43,8 @@ TrainConfig(
 
 这里的 batch size 和训练步数是配置示例，需按训练设备和数据规模调整。
 50 是官方模型默认 action horizon；以实际数据帧率换算时间长度。
-LeRobot 中每一行只存一个 16 维 action，OpenPI 按 `delta_timestamps=[0/fps,...,49/fps]`
-读取未来动作序列，不需要在转换时把每行扩成 50×16。
+LeRobot 中每一行只存一个 24 维 action，OpenPI 按 `delta_timestamps=[0/fps,...,49/fps]`
+读取未来动作序列，不需要在转换时把每行扩成 50×24。
 序列末尾由固定版本 LeRobot 在同一 episode 内重复最后动作；不得拼接下一条 episode。
 
 ## 2. 本地数据位置与训练前验读
@@ -63,14 +65,14 @@ uv run scripts/train.py pi05_r2 --exp-name=r2_test_v1
 
 必须使用本数据重新计算 normalization statistics，不能套用 LIBERO 或 ALOHA 的统计量。
 `SimpleDataConfig` 继承官方 `ModelTransformFactory`，会在标准化之后把图像调整为 224×224，
-并把原始 16 维 state/action 补到模型的 32 维；这些 padding 不是额外机器人关节。
+并把原始 24 维 state/action 补到模型的 32 维；这些 padding 不是额外机器人关节。
 
 ## 3. 字段、动作语义和推理接口
 
 转换输出包含：
 
-- `observation.state`: float32[16]，顺序为左臂 7 关节、左夹爪、右臂 7 关节、右夹爪。
-- `action`: float32[16]，顺序相同。默认保留转换报告声明的绝对目标和原始单位。
+- `observation.state`: float64[24]，顺序为腰5、头3、左臂7、左夹爪、右臂7、右夹爪。
+- `action`: float64[24]，顺序相同。默认保留转换报告声明的绝对目标和原始单位。
 - `observation.images.head_color`、`hand_left_color`、`hand_right_color`: RGB。
 - task metadata: 每条 episode 的任务文本，通过 `prompt_from_task=True` 交给模型。
 
@@ -79,15 +81,15 @@ R2 自定义 state/action 不能直接套用官方 LIBERO 的 8 维 state、7 �
 
 默认 `use_delta_joint_actions=False`。如果训练方案明确需要相对于当前 state 的关节目标，
 可以改成 True 并重新计算 normalization statistics；此时 mask 为
-`[True]*7 + [False] + [True]*7 + [False]`，两个夹爪始终保持绝对值。
-推理输出通过相反变换还原为绝对目标，最后只返回前 16 维。
+`[True]*15 + [False] + [True]*7 + [False]`，两个夹爪始终保持绝对值。
+推理输出通过相反变换还原为绝对目标，最后只返回前 24 维。
 这只是数据与模型接口适配，不等于已验证机器人控制器的单位、限位或执行语义。
 
 推理时向模型提交重打包后的字段；RGB 可用 uint8 HWC，state 必须与训练时单位和顺序完全一致：
 
 ```python
 observation = {
-    "state": state_16,
+    "state": state_24,
     "images": {
         "head_color": head_rgb,
         "hand_left_color": left_rgb,

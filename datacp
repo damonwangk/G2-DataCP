@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+# 使用说明
+# 用途：单文件HTTP命令行客户端，管理平台状态、采集、转换、原回放与导出。
+# 使用：在项目根目录运行 ./datacp --help；./datacp status 查看机器人API状态。
+# 远程：python3 datacp --url http://机器人IP:18769 status（--url放在子命令前）。
+# 依赖：Python标准库；操作需要已有平台服务，参数帮助不连接机器人。
+# 输出：JSON；export-* 将原文件TAR下载到执行此客户端的电脑。
+# 注意：record-start开始录制；replay/mcap-replay/native-replay会执行动作。
+# 详细：使用说明.md；docs/平台启动与命令行.md；功能索引见 docs/功能使用索引.md。
+#
 """Command-line client for the robot-local DataCP HTTP API (stdlib only)."""
 import argparse
 import json
@@ -48,6 +57,7 @@ def parser():
     d = sub.add_parser('mcap-files'); d.add_argument('--category', default='collection')
     d = sub.add_parser('mcap-replay'); d.add_argument('--file', required=True); d.add_argument('--speed', type=float, default=1.)
     d = sub.add_parser('convert')
+    d.add_argument('--input-format', choices=['auto','mcap','factory'], default='auto',help='输入采集格式；factory 为机器人原生离线记录')
     source = d.add_mutually_exclusive_group(required=True)
     source.add_argument('--episode', action='append', dest='episodes', help='MCAP文件或episode目录，可重复指定')
     source.add_argument('--source-dir', help='自动递归发现目录内的MCAP episode')
@@ -56,9 +66,14 @@ def parser():
     destination.add_argument('--name', help='本次转换的单层文件夹名称，保存为 输出目录/名称')
     destination.add_argument('--repo-id', help='兼容旧脚本的 owner/name 格式')
     d.add_argument('--task', required=True)
+    d.add_argument('--workers',type=int,default=2,help='批量并行记录数')
+    d.add_argument('--threads',type=int,default=2,help='每条记录的图像写入/编码线程数')
     d = sub.add_parser('datasets'); d.add_argument('--root', help='省略时读取网页保存的 LeRobot 目录')
     d = sub.add_parser('inspect'); d.add_argument('--dataset', required=True); d.add_argument('--episode', type=int)
     d = sub.add_parser('replay'); d.add_argument('--dataset', required=True); d.add_argument('--episode', required=True, type=int)
+    d = sub.add_parser('native-inspect'); d.add_argument('--source',required=True)
+    d = sub.add_parser('native-replay'); d.add_argument('--source',required=True)
+    d = sub.add_parser('export-native'); d.add_argument('--root',default='/data/record'); d.add_argument('--episode',action='append',required=True); d.add_argument('--output',required=True)
     d = sub.add_parser('export-mcap'); d.add_argument('--episode', action='append', required=True); d.add_argument('--output', required=True)
     d = sub.add_parser('export-lerobot'); d.add_argument('--dataset', required=True); d.add_argument('--output', required=True)
     return p
@@ -88,7 +103,8 @@ def dispatch(a, client):
         return client.call('/api/replay/start', {'file':a.file,'speed':a.speed,'confirm_motion':True})
     if command == 'mcap-replay-stop': return client.call('/api/replay/stop', {})
     if command == 'convert':
-        body = {'task':a.task}
+        body = {'task':a.task,'workers':a.workers,'threads':a.threads}
+        if a.input_format!='auto':body['input_format']=a.input_format
         if a.output_dir:body['output_dir']=a.output_dir
         if a.name:body['dataset_name']=a.name
         else:body['repo_id']=a.repo_id
@@ -104,6 +120,11 @@ def dispatch(a, client):
         return client.call('/api/lerobot/inspect', {'dataset':a.dataset,'episode':a.episode})
     if command == 'replay': return client.call('/api/lerobot/replay/start', {'dataset':a.dataset,'episode':a.episode})
     if command == 'replay-stop': return client.call('/api/lerobot/replay/stop', {})
+    if command == 'native-inspect':return client.call('/api/native/inspect',{'source':a.source})
+    if command == 'native-replay':return client.call('/api/native/replay/start',{'source':a.source})
+    if command == 'export-native':
+        job=client.call('/api/export/prepare',{'episode_paths':a.episode,'input_format':'factory','root':a.root})
+        return client.download(job['archive_url'],a.output)
     if command == 'export-mcap':
         job = client.call('/api/export/prepare', {'episode_paths':a.episode})
         return client.download(job['archive_url'], a.output)

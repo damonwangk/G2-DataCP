@@ -1,4 +1,13 @@
-"""Original-value MCAP recording with selected fields and indexed file playback."""
+# 使用说明
+# 用途：原始MCAP写入、已完成记录索引、文件校验和画面预览。
+# 用法：内部模块；通过网页或 datacp record-* 管理采集，通过文件预览API查看记录。
+# 详细说明：采集与预览使用说明.md
+
+"""按所选话题原样写入 MCAP，并提供已录文件的索引与画面预览。
+
+Recorder 不做时间对齐、插帧、插值或字段删改。/raw/* 保存收到的
+完整 Aorta 包；protobuf 和 JPEG 辅助通道仅拆出原负载，便于读取。
+"""
 from collections import Counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -12,7 +21,7 @@ import time
 from mcap.writer import Writer, CompressionType
 from mcap.reader import make_reader
 from native import ROOT, CAMERAS, decode
-from record_filter import EXCLUDED_TOPICS, POLICY, selected_frame
+from record_filter import EXCLUDED_TOPICS, POLICY
 from selection import normalize_topics
 from frequency import RateMeter
 
@@ -33,10 +42,20 @@ def data_dir():
     return DATA
 
 
+def episode_number_from_name(name):
+    # Prefer the final sequence field; a task may itself be named episode_12.
+    for pattern in (r'^.+_(\d+)_\d{8}_\d{6}$', r'^episode_(\d+)_'):
+        match=re.match(pattern, str(name).removesuffix('.mcap'))
+        if match:return int(match.group(1))
+    return None
+
+
 def episode_number(directory):
     counter = Path(directory) / '.episode_sequence.json'
     recorded = json.loads(counter.read_text()).get('last_episode', 0) if counter.exists() else 0
-    numbers = [int(m.group(1)) for p in Path(directory).iterdir() if (m := re.match(r'^episode_(\d+)_', p.name))]
+    # Keep the old default names while also recovering the sequence from custom
+    # task names when a directory has been copied without its hidden counter.
+    numbers = [n for p in Path(directory).iterdir() if (n := episode_number_from_name(p.name)) is not None]
     return max([int(recorded)] + numbers)
 
 
@@ -72,16 +91,8 @@ def browse_directory(value=None):
 
 
 def file_path(name):
-    root=data_dir().resolve()
-    if not name or Path(name).name!=name:raise ValueError('请选择列表中的 episode')
-    aliases=root/'.episode_aliases.json'
-    if aliases.exists():name=json.loads(aliases.read_text()).get(name,name)
-    p=(root/name).resolve()
-    if p.parent!=root:raise ValueError('episode 不在当前目录中')
-    if p.is_dir():p=(p/'raw.mcap').resolve()
-    if not p.is_relative_to(root) or p.suffix!='.mcap' or not p.is_file():
-        raise ValueError('当前保存目录中找不到该 episode 的 MCAP')
-    return p
+    from mcap_files import resolve_mcap
+    return resolve_mcap(name, data_dir())
 
 
 class Recorder:
@@ -106,7 +117,7 @@ class Recorder:
             self.record_kind='feedback' if self.context.get('kind') in ('replay','posture') else 'test' if self.context.get('kind')=='self_test' else 'collection'
             if self.record_kind=='collection':
                 number=episode_number(data_dir())+1
-                self.episode_id=f"episode_{number}_{stamp[:15]}"
+                self.episode_id=f"{label}_{number}_{stamp[:15]}"
             else:
                 self.episode_id=f'{stamp}_{label}'
             self.directory=data_dir()/self.episode_id
@@ -168,16 +179,19 @@ class Recorder:
                 def write(topic, encoding, data, name=None):
                     cid = self.channel(topic,encoding,name,p)
                     self.writer.add_message(channel_id=cid, log_time=log_ns, publish_time=pub_ns, data=data, sequence=seq)
+                # 原包直接交给 MCAP，ZSTD 仅做可逆容器压缩；不重建报文。
                 write('/raw'+topic, 'aorta', frame)
                 write('/metadata'+topic,'json',dumps(dict(meta, receive_unix_ns=str(log_ns), receive_monotonic_ns=str(event['mono_ns']),publisher_uid=p['uid'],removed_fields=removed_fields,source_packet_bytes=len(event['frame']),stored_packet_bytes=len(frame))),'r2.PacketMetadata')
                 if p['type'] != 'CosineDataPacket':
+                    # 去掉 Aorta 外封装后的原始 protobuf 字节，不解析后重序列化。
                     write(topic,'protobuf',frame[128:],p['type'])
-                elif meta['encoding'] == 1:
+                elif meta.get('encoding') == 1 and event.get('image') is not None:
                     msg = self.schemas.get('foxglove.CompressedImage')()
                     msg.timestamp.seconds = log_ns//1000000000
                     msg.timestamp.nanos = log_ns%1000000000
                     msg.frame_id = topic.rsplit('/',1)[-1]
                     msg.format = 'jpeg'
+                    # 原 JPEG 字节放入通用图像信封，不解码、不缩放、不重编码。
                     msg.data = event['image']
                     write(topic+'/image','protobuf',msg.SerializeToString(),'foxglove.CompressedImage')
                 self.counts[topic] += 1

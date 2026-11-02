@@ -1,9 +1,15 @@
+# 使用说明
+# 用途：平台离线回归测试：core。
+# 用法：在studio目录执行 python -m unittest tests.test_core（已配置依赖的Python）；使用模拟SDK/API，不运行真机任务。
+# 详细说明：../README.md
+
 import io
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 from mcap.reader import make_reader
+from tests.synthetic_fixtures import synthetic_camera_frame
 from native import Framer, Schemas, decode, ROOT
 from pipeline import Series, choose, joint_at
 from storage import Recorder, Playback, validate
@@ -11,13 +17,13 @@ from storage import Recorder, Playback, validate
 class Contracts(unittest.TestCase):
     def setUp(self):self.schemas=Schemas()
     def test_fragmented_camera_frame(self):
-        frame=(ROOT/'evidence/camera_head_color_cosine_runner.bin').read_bytes();f=Framer()
+        frame=synthetic_camera_frame();f=Framer()
         self.assertEqual(list(f.feed(frame[:3])),[]);self.assertEqual(list(f.feed(frame[3:129])),[])
         self.assertEqual(list(f.feed(frame[129:]+frame)),[frame,frame])
     def test_wrong_length_rejected(self):
         with self.assertRaises(ValueError):list(Framer().feed(b'\x01\x00\x00\x00'))
     def test_original_jpeg_payload(self):
-        frame=(ROOT/'evidence/camera_head_color_cosine_runner.bin').read_bytes();meta,_,jpg=decode(frame,'CosineDataPacket',self.schemas)
+        frame=synthetic_camera_frame();meta,_,jpg=decode(frame,'CosineDataPacket',self.schemas)
         self.assertEqual(jpg,frame[176:]);self.assertEqual((meta['width'],meta['height']),(640,400))
     def samples(self):
         s=Series([{'t':100,'log':1010,'seq':1,'uid':'x','names':['a','b'],'q':[0.,10.]},
@@ -33,7 +39,7 @@ class Contracts(unittest.TestCase):
     def test_lossless_mcap_roundtrip(self):
         import storage,json,time
         p={'topic':'/camera/head_color','exe_name':'cosine_runner','type':'CosineDataPacket','uid':'roundtrip-fixture'}
-        frame=(ROOT/'evidence/camera_head_color_cosine_runner.bin').read_bytes();meta,data,image=decode(frame,p['type'],self.schemas)
+        frame=synthetic_camera_frame();meta,data,image=decode(frame,p['type'],self.schemas)
         with tempfile.TemporaryDirectory() as tmp,patch.object(storage,'data_dir',return_value=Path(tmp)):
             recorder=Recorder(self.schemas);recorder.start('roundtrip',[])
             event=dict(topic=p['topic'],publisher=p,frame=frame,wall_ns=time.time_ns(),mono_ns=time.monotonic_ns(),meta=meta,data=data,image=image)

@@ -1,3 +1,10 @@
+# 使用说明
+# 用途：由采集方显式确认文件写入全部结束后，创建 .lerobot-ready.json。
+# 从项目根目录手动运行：./conversion/.venv/bin/python conversion/episode_ready.py /path/to/full --confirm-finalized
+# 该命令会在指定原生记录目录写入标记；它不会检测/停止采集进程。
+# 标记清单沿用旧的bundle及三相机文件集合，不等同于当前逐话题输入的完整性验收。
+# 供 run_robot.sh 的 --ready-only 过滤使用；使用边界见 README.md。
+#
 """Producer-declared collection finalization marker; never infer writer closure.
 
 Only a collector who has closed all writers may explicitly create the marker.

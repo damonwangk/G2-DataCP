@@ -1,3 +1,9 @@
+/*
+使用说明
+用途：SDK范围提醒和控制占用只读诊断的前端展示。
+用法：由 app.py 提供的工作台页面加载，浏览器访问 http://机器人IP:18769/；不作为独立脚本启动。
+详细说明：../回放与姿态使用说明.md
+*/
 "use strict";
 const limitLabel=x=>({normal:'范围内',near:'接近边界',limit:'到达端点 · SDK 范围内',over:'超出 SDK 范围',stale:'反馈已过期',unknown:'未收到有效位置'}[x?.status]||'未知');
 const limitColor=x=>x?.status==='over'?'over':['near','limit'].includes(x?.status)?'near':['stale','unknown'].includes(x?.status)?'stale':'normal';

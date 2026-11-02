@@ -1,5 +1,12 @@
+/*
+使用说明
+用途：原始记录目录树、多选、导出与MCAP删除界面。
+用法：由 app.py 提供的工作台页面加载，浏览器访问 http://机器人IP:18769/；不作为独立脚本启动。
+详细说明：../数据管理与转换调度使用说明.md
+*/
 'use strict';
 let robotFileRows=[],libraryTree=null,libraryRoot='',libraryOpen=new Map(),exportSelection=new Set(),exportDirectory=null,exportBusy=false,exportAbort=null,pendingDelete=[],robotFilesRefresh=null;
+let libraryFormat='mcap',nativeExportRoot='/data/record';
 const directoryPickerAvailable=typeof window!=='undefined'&&typeof window.showDirectoryPicker==='function';
 function clientComputer(){
  const platform=typeof navigator!=='undefined'?(navigator.userAgentData?.platform||navigator.platform||'当前电脑'):'当前电脑';
@@ -7,6 +14,7 @@ function clientComputer(){
 }
 function renderRobotStorage(s){
  const r=s.recording;
+ if(typeof observeConversionCapture==='function')observeConversionCapture(r);
  $('#robotSaveDir').value=r.data_dir||s.data_dir||'';
  $('#robotStorageStatus').textContent=r.connected?'机器人本机运行':'采集服务连接中';
  $('#robotStorageInfo').textContent='机器人可用空间 '+fmt(r.free_gb,1)+' GB · '+(r.active?'正在写入 '+r.path:'当前采集目录持续保留；每次开始 / 结束生成一条独立 episode。');
@@ -14,6 +22,7 @@ function renderRobotStorage(s){
 function folderEpisodes(group){return [...(group.episodes||[]),...(group.groups||[]).flatMap(folderEpisodes)];}
 function selectedBytes(){return robotFileRows.filter(r=>exportSelection.has(r.id)).reduce((n,r)=>n+(r.total_bytes??r.bytes??0),0);}
 function updateExportControls(){
+ $('#rawDeleteTools').hidden=libraryFormat==='factory';$('#rawExportLabel').textContent=libraryFormat==='factory'?'原生采集完整目录':'MCAP 文件目录';$('#useCaptureRoot').textContent=libraryFormat==='factory'?'使用原生采集目录':'使用当前采集目录';
  $('#exportCount').textContent='已选 '+exportSelection.size+' 条 · '+fmt(selectedBytes()/1048576,1)+' MB';
  ['exportSelected','exportArchive','deleteSelected'].forEach(id=>$('#'+id).disabled=exportBusy||!exportSelection.size);
  ['chooseExportFolder','chooseLibraryRoot','useCaptureRoot','exportAll','exportNone'].forEach(id=>$('#'+id).disabled=exportBusy);
@@ -42,7 +51,7 @@ function renderRobotFiles(){
   groups.set(group.path,{chosen,count:rows.length});
   const open=libraryOpen.has(group.path)?libraryOpen.get(group.path):isRoot;
   return '<details class="library-folder" data-library-folder="'+esc(group.path)+'" '+(open?'open':'')+'><summary><label class="library-folder-label"><input type="checkbox" data-export-group="'+esc(group.path)+'" data-empty="'+(!rows.length)+'" '+(chosen&&chosen===rows.length?'checked':'')+'><strong>'+esc(group.name)+'</strong></label><span class="muted">'+rows.length+' 条 · '+fmt((group.total_bytes||0)/1048576,1)+' MB</span></summary><div class="library-folder-content">'+
-   (group.episodes||[]).map(row=>'<label class="robot-file-row"><input type="checkbox" data-export-file="'+esc(row.id)+'" '+(exportSelection.has(row.id)?'checked':'')+'><div><strong>'+esc(row.file)+'</strong><small>'+({collection:'正式采集',feedback:'执行反馈',test:'测试'}[row.category]||'记录')+' · '+fmt((row.total_bytes??row.bytes??0)/1048576,1)+' MB</small></div></label>').join('')+
+   (group.episodes||[]).map(row=>'<label class="robot-file-row"><input type="checkbox" data-export-file="'+esc(row.id)+'" '+(exportSelection.has(row.id)?'checked':'')+'><div><strong>'+esc(row.file)+'</strong><small>'+({factory:'原生离线采集',collection:'正式采集',feedback:'执行反馈',test:'测试'}[row.category]||'记录')+' · '+fmt((row.total_bytes??row.bytes??0)/1048576,1)+' MB</small></div></label>').join('')+
    (group.groups||[]).map(child=>html(child)).join('')+(!rows.length?'<p class="muted library-empty">此文件夹暂无已完成的 episode。</p>':'')+'</div></details>';
  }
  $('#robotFiles').innerHTML=libraryTree?html(libraryTree,true):'<p class="muted">正在读取机器人数据目录…</p>';
@@ -57,10 +66,18 @@ function renderRobotFiles(){
  }));
  updateExportControls();
 }
-function refreshRobotFiles(){
- if(robotFilesRefresh)return robotFilesRefresh;
+let robotFilesRequestKey='';
+function refreshRobotFiles(path,requestedFormat){
+ // Button handlers pass a click event; only directory strings are paths.
+ if(typeof path!=='string')path=undefined;
+ const format=requestedFormat||(typeof getExportFormat==='function'?getExportFormat():'mcap');if(format==='lerobot')return Promise.resolve();
+ const key=format+'|'+(path||'');
+ if(robotFilesRefresh)return key===robotFilesRequestKey?robotFilesRefresh:robotFilesRefresh.catch(()=>{}).then(()=>refreshRobotFiles(path,requestedFormat));
+ robotFilesRequestKey=key;
  robotFilesRefresh=(async()=>{
-  const result=await api('/api/library/tree');
+  if(format!==libraryFormat){libraryFormat=format;exportSelection.clear();libraryTree=null;robotFileRows=[];libraryOpen.clear();libraryRoot=format==='factory'?nativeExportRoot:'';$('#libraryRoot').value=libraryRoot;$('#robotFiles').innerHTML='<p class="muted">正在读取目录…</p>';updateExportControls();}
+  const root=format==='factory'?(path||nativeExportRoot):path;const query=new URLSearchParams();if(root)query.set('path',root);if(format==='factory')query.set('input_format',format);
+  const result=await api('/api/library/tree'+(query.toString()?'?'+query:''));if(format==='factory')nativeExportRoot=result.root;libraryFormat=format;
   if(result.root!==libraryRoot){libraryOpen.clear();exportSelection.clear();}
   libraryRoot=result.root;libraryTree=result.tree;robotFileRows=libraryTree?folderEpisodes(libraryTree):[];
   $('#libraryRoot').value=libraryRoot||'';renderRobotFiles();
@@ -68,6 +85,7 @@ function refreshRobotFiles(){
  })().catch(error=>{$('#exportProgress').textContent='目录列表读取失败：'+error.message+'。可点击“刷新记录”重试。';throw error;}).finally(()=>{robotFilesRefresh=null;});
  return robotFilesRefresh;
 }
+function rawExportPayload(paths){return libraryFormat==='factory'?{episode_paths:paths,input_format:'factory',root:libraryRoot}:{episode_paths:paths};}
 async function chooseExportDirectory(){
  if(!directoryPickerAvailable){
   $('#exportProgress').textContent='此浏览器使用下载保存：点击“下载打包文件”，在浏览器下载/另存为窗口选择位置；也可在浏览器设置中启用“下载前询问保存位置”。';return;
@@ -92,7 +110,7 @@ async function exportToDirectory(){
  exportBusy=true;exportAbort=new AbortController();updateExportControls();
  const episodePaths=[...exportSelection];
  try{
-  const manifest=await api('/api/export/prepare',{episode_paths:episodePaths});
+  const manifest=await api('/api/export/prepare',rawExportPayload(episodePaths));
   for(const entry of manifest.files)if(await existingExportFile(entry.relative_path))throw Error('目标文件已存在：'+entry.relative_path+'。请选择其他目录，避免覆盖已导出数据。');
   const folders=new Map([['',exportDirectory]]);let bytes=0;const began=performance.now();
   for(const entry of manifest.files){
@@ -108,7 +126,7 @@ async function exportToDirectory(){
 }
 async function downloadArchive(){
  exportBusy=true;updateExportControls();
- try{const manifest=await api('/api/export/prepare',{episode_paths:[...exportSelection]});const link=document.createElement('a');link.href=manifest.archive_url;link.download=manifest.filename;document.body.appendChild(link);link.click();link.remove();$('#exportProgress').textContent='已交给浏览器下载：'+manifest.filename+'。在浏览器中查看进度、选择保存位置或取消；解包后保留采集文件夹与 episode 层级。';}
+ try{const manifest=await api('/api/export/prepare',rawExportPayload([...exportSelection]));const link=document.createElement('a');link.href=manifest.archive_url;link.download=manifest.filename;document.body.appendChild(link);link.click();link.remove();$('#exportProgress').textContent='已交给浏览器下载：'+manifest.filename+'。在浏览器中查看进度、选择保存位置或取消；解包后保留采集文件夹与 episode 层级。';}
  finally{exportBusy=false;updateExportControls();}
 }
 function requestEpisodeDelete(){
@@ -133,8 +151,8 @@ async function deleteEpisodes(){
  finally{exportBusy=false;$('#confirmDeleteEpisodes').disabled=false;updateExportControls();}
 }
 action('#chooseRobotDir',async()=>{directoryTarget='robot';$('#createDir').hidden=false;$('#directoryTitle').textContent='选择机器人本机保存目录';$('#directoryDescription').textContent='选定文件夹后可连续采集，每次结束保留目录，下次开始递增 episode 序号。';await browse(current?.recording.data_dir);$('#directoryDialog').showModal();});
-action('#chooseLibraryRoot',async()=>{directoryTarget='library';$('#createDir').hidden=true;$('#directoryTitle').textContent='选择导出 / 删除的机器人目录';$('#directoryDescription').textContent='展开此目录中的采集文件夹，批量选择全部或部分 episode；不会改变正在使用的采集目录。';await browse(libraryRoot||current?.data_dir);$('#directoryDialog').showModal();});
-action('#useCaptureRoot',async()=>{const path=current?.recording.data_dir||current?.data_dir;if(!path)throw Error('尚未取得采集目录');await api('/api/library/root',{path});await refreshRobotFiles();});
+action('#chooseLibraryRoot',async()=>{directoryTarget=libraryFormat==='factory'?'native-export':'library';$('#createDir').hidden=true;$('#directoryTitle').textContent='选择导出 / 删除的机器人目录';$('#directoryDescription').textContent='展开此目录中的采集文件夹，批量选择全部或部分 episode；不会改变正在使用的采集目录。';await browse(libraryRoot||current?.data_dir);$('#directoryDialog').showModal();});
+action('#useCaptureRoot',async()=>{if(libraryFormat==='factory'){await refreshRobotFiles('/data/record','factory');return;}const path=current?.recording.data_dir||current?.data_dir;if(!path)throw Error('尚未取得采集目录');await api('/api/library/root',{path});await refreshRobotFiles();});
 action('#refreshRobotFiles',refreshRobotFiles);action('#chooseExportFolder',chooseExportDirectory);
 action('#exportAll',()=>{exportSelection=new Set(robotFileRows.filter(r=>r.category==='collection').map(r=>r.id));renderRobotFiles();});
 action('#exportNone',()=>{exportSelection.clear();renderRobotFiles();});action('#exportSelected',()=>typeof runSelectedExport==='function'?runSelectedExport():exportToDirectory());action('#exportArchive',()=>typeof runSelectedArchive==='function'?runSelectedArchive():downloadArchive());action('#cancelExport',()=>typeof cancelSelectedExport==='function'?cancelSelectedExport():exportAbort?.abort());

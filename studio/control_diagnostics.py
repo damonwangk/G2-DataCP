@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：只读查看仲裁、SDK通道、遥操/模型占用及反馈状态。
+# 用法：内部模块；网页检测能否控制或 GET /api/control/check；不切换控制权、不发送动作。
+# 详细说明：回放与姿态使用说明.md
+
 """Passive diagnostics only: registry reads, status subscription and log GETs."""
 import base64
 from pathlib import Path

@@ -1,4 +1,13 @@
-"""Robot-local raw MCAP writer. No SDK control, no dependency on Ubuntu connection."""
+# 使用说明
+# 用途：机器人本机原始MCAP采集后台，监听127.0.0.1:18767。
+# 用法：由根目录 ./start.sh 启动采集服务；开始/下一条/结束使用 datacp 或 recordctl.py，不重复启动后台。
+# 详细说明：采集与预览使用说明.md
+
+"""机器人本机采集服务：订阅原始话题，逐包交给 MCAP 写入器。
+
+开始/停止只控制记录边界；不调用运动 SDK，不做插帧或插值。
+LimitMonitor 只生成界面提示，不修改、不拦截交给 Recorder 的数据。
+"""
 import sys
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
@@ -18,6 +27,7 @@ class Agent:
   self.receiver=Receiver('10.42.1.101',self.schemas,self.on_event,connect_host='127.0.0.1')
   self.receiver.start()
  def on_event(self,event):
+  # 先写入原始事件；界面范围提示与采集内容相互独立。
   self.recorder.ingest(event);self.limit_monitor.observe(event)
  def status(self):
   return dict(self.recorder.status(),data_dir=str(data_dir()),free_gb=shutil.disk_usage(data_dir()).free/1024**3,

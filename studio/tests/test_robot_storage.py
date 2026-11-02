@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：平台离线回归测试：robot_storage。
+# 用法：在studio目录执行 python -m unittest tests.test_robot_storage（已配置依赖的Python）；使用模拟SDK/API，不运行真机任务。
+# 详细说明：../README.md
+
 import json,tempfile,threading,time,unittest
 from pathlib import Path
 from types import SimpleNamespace as NS

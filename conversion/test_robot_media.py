@@ -1,3 +1,9 @@
+# 使用说明
+# 用途：历史图像写入/CPU编码辅助的离线兼容回归。
+# 从项目根目录运行：./conversion/.venv/bin/python -m unittest discover -s conversion -p "test_robot_media.py" -v
+# 仅使用临时目录、合成数据或Fake依赖，不启动真实SDK、不发送机器人动作。
+# 测试分组、依赖环境及历史兼容范围见 README.md。
+#
 import tempfile
 import unittest
 from fractions import Fraction
@@ -11,6 +17,14 @@ from robot_media import bounded_dataset_class, encode_images
 
 
 class RobotMediaTests(unittest.TestCase):
+    def test_fast_temporary_png_preserves_every_pixel(self):
+        cls=bounded_dataset_class(object)
+        writer=cls();writer.image_writer=None
+        rgb=np.random.default_rng(3).integers(0,256,(64,96,3),dtype=np.uint8)
+        with tempfile.TemporaryDirectory() as td:
+            path=Path(td)/'frame.png';writer._save_image(rgb,path)
+            np.testing.assert_array_equal(np.asarray(Image.open(path)),rgb)
+
     def test_h264_roundtrip(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

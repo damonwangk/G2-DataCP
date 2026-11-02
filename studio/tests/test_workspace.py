@@ -1,3 +1,9 @@
+# 使用说明
+# 用途：平台离线回归测试：workspace。
+# 用法：在studio目录执行 python -m unittest tests.test_workspace（已配置依赖的Python）；使用模拟SDK/API，不运行真机任务。
+# 详细说明：../README.md
+
+"""验证采集目录及姿态保存、可恢复删除和双夹爪反馈/控制坐标换算。"""
 import copy
 import json
 from pathlib import Path
@@ -44,6 +50,14 @@ class Workspace(unittest.TestCase):
             self.assertEqual(loaded['names'],p.NAMES);self.assertEqual(len(loaded['positions']),24)
             text=json.dumps(loaded);self.assertNotIn('wheel_joint',text);self.assertNotIn('chassis',text);self.assertNotIn('/tf',text)
             self.assertEqual(loaded['positions'][-2:],[.012,.023]);self.assertEqual(len(p.list_poses()),1)
+    def test_deleted_pose_keeps_exact_mcap_and_other_pose(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(p,'POSES',Path(tmp)):
+            saved=p.save_pose(latest(),'delete me');other=p.save_pose(latest(),'keep me')
+            original=p.pose_path(saved['id']).read_bytes();result=p.delete_pose(saved['id'])
+            self.assertEqual(Path(result['archived_path']).read_bytes(),original)
+            self.assertEqual([x['id'] for x in p.list_poses()],[other['id']])
+            with self.assertRaises(ValueError):p.delete_pose(saved['id'])
+            with self.assertRaises(ValueError):p.delete_pose('../outside')
     def test_pose_rejects_stale_or_missing_feedback(self):
         s=latest();s[p.JOINT]['mono_ns']-=1_000_000_000
         with self.assertRaises(ValueError):p.capture(s,'stale')
@@ -69,12 +83,14 @@ class Workspace(unittest.TestCase):
             def joint_control_request(self,r):
                 commands.append(('body',r.joint_names));self.q[:22]=r.joint_positions;return 0
             def move_ee_pos(self,r):
-                commands.append(('gripper',r.group,r.target_type));self.q[22+(r.group=='right_tool')]=r.states[0].position;return 0
+                commands.append(('gripper',r.group,r.target_type,r.states[0].position));self.q[22+(r.group=='right_tool')]=.025-r.states[0].position;return 0
         sdk=SimpleNamespace(JointControlReq=SimpleNamespace,JointStates=SimpleNamespace,JointState=SimpleNamespace)
         with patch('pose_worker.time.sleep'):
             out=execute(FakeRobot(),sdk,pose,lambda *args:None,lambda:False)
         self.assertTrue(out['tracking_passed']);self.assertEqual(len(commands),3);self.assertEqual(commands[0][1],p.JOINT_NAMES)
-        self.assertEqual(commands[1:], [('gripper','left_tool','dahuan'),('gripper','right_tool','dahuan')])
+        self.assertEqual([c[:3] for c in commands[1:]], [('gripper','left_tool','dahuan'),('gripper','right_tool','dahuan')])
+        self.assertAlmostEqual(commands[1][3],.013);self.assertAlmostEqual(commands[2][3],.002)
+        self.assertEqual(pose['positions'][-2:],[.012,.023])
     def test_readonly_api_and_pose_save_do_not_start_hardware(self):
         import app as server
         with tempfile.TemporaryDirectory() as tmp,patch.object(p,'POSES',Path(tmp)/'poses'),patch.object(storage,'SETTINGS',Path(tmp)/'workspace.json'),patch.object(server,'snapshot',side_effect=lambda _:latest()),patch.object(server.recorder,'select_directory',side_effect=storage.select_directory),patch.object(server.library,'SETTINGS',Path(tmp)/'library.json'),patch.object(server.receiver,'start') as start,patch('subprocess.Popen') as proc:
@@ -84,6 +100,9 @@ class Workspace(unittest.TestCase):
             r=client.post('/api/poses',json={'label':'offline pose'});self.assertEqual(r.status_code,200);identity=r.json()['id']
             r=client.post('/api/poses/'+identity+'/plan',json={});self.assertEqual(r.status_code,200);self.assertFalse(r.json()['base_drive_restored'])
             self.assertEqual(client.get('/api/poses').status_code,200)
+            deleted=client.post('/api/poses/'+identity+'/delete',json={})
+            self.assertEqual(deleted.status_code,200);self.assertTrue(deleted.json()['deleted'])
+            self.assertEqual(client.get('/api/poses').json()['poses'],[])
             self.assertEqual(client.get('/api/directories',params={'path':str(dest)}).status_code,200)
             start.assert_not_called();proc.assert_not_called()
 

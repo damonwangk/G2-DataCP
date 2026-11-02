@@ -1,36 +1,44 @@
-# 采集平台 MCAP 转换
+# MCAP与厂商原生输入的转换契约
 
-`platform_convert.py` 接收平台采集的 `raw.mcap`，也接收原厂 bundle 录制目录。可传单个文件、episode 目录或父目录；父目录递归发现已保存的 MCAP。多个输入路径可同时写入 JSON 数组，重复路径仅处理一次。
+运行、安装、输出、并行和恢复统一见[README.md](README.md)。本页只说明两种输入如何变为同一份训练表，便于查明每个字段来自哪里。
 
-```bash
-cd /data/r2_datacp/conversion
-printf '%s\n' '["/data/data/文件夹A"]' > /tmp/convert-inputs.json
-./run_platform.sh --inputs-json /tmp/convert-inputs.json \
-  --output-dir /data/lerobot --repo-id local/task_a \
-  --task '这里填写本批数据的真实任务描述' \
-  --result /tmp/convert-result.json --progress /tmp/convert-progress.json
-```
+## 输入和调用
 
-以上实际数据集目录为 `/data/lerobot/local/task_a`。同一输出续转加 `--resume`，已完成来源不会重复追加。结果 JSON 给出 `completed`、`dataset_path`、`total_episodes`、`total_frames`；stdout 输出进度。遇到不能解析的输入会继续其余输入，最终结果列出失败信息。原始 MCAP 不修改。
+| 输入 | 读取模块 | 主要来源 |
+|---|---|---|
+| 自采`.mcap`文件 | `mcap_input.py` | 原始protobuf关节话题、`/raw/camera/*`中的Aorta相机包 |
+| 厂商`full_*`目录 | `factory_input.py` | `record/-hal-joint_cmd.pbdat`等逐话题文件、`camera/<相机>/<相机>.txt/.h265` |
 
-## MCAP 映射
+两种输入均经`convert_r2.py` → `raw_convert.py`写入；JSON入口为`run_platform.sh` → `platform_convert.py`。指定`--input-format mcap`或`factory`可限制发现范围，`auto`按路径自动发现。原生主链不读取repaired/aligned H5，也不把bundle聚合值替代原始逐话题动作。
 
-输出沿用原转换程序固定的 LeRobot v2.1 / π0.5 数据格式：30 Hz（可用 `--fps` 修改）、16 维状态和动作；存在的相机输出为 256×256 RGB H.264 MP4。向量顺序为左臂 7 关节、左夹爪、右臂 7 关节、右夹爪。
+## 24维名称及动作/实测分离
 
-- 状态：`/hal/joint_state.motor_position` 的弧度值，加 `/hal/{left,right}_ee_data.end_state[].position` 原生夹爪行程值；根据消息中的关节名取值。
-- 动作：优先使用 `/hal/joint_cmd.position` 与 `/wbc/{left,right}_ee_command.position`。对应命令缺失时，用该部分采集到的状态轨迹作为回放动作。
-- 图像：`/camera/{head_color,hand_left_color,hand_right_color}/image` 中的原始 JPEG。训练格式将其解码、保持比例补边，再编码为 MP4。
-- 每个 MCAP 对应一个输出 episode。按 MCAP `log_time` 建立均匀时间轴，逐通道取最近样本，不因缺口、时间差或关节范围过滤、裁剪或拆分数据。
-- `provenance/frames.jsonl` 记录每帧动作实际来自哪个 command/state 通道、原消息序号、接收/发布时间戳。使用状态轨迹时不会宣称它是原始控制命令。
+由`recording_contract.py`定义固定顺序：腰5、头3、左臂7、左夹爪、右臂7、右夹爪。protobuf中的值按关节名读取，再组织成这个顺序，不依赖输入数组原始排列。两个夹爪的规范名为`idx31_gripper_l_inner_joint1`、`idx71_gripper_r_inner_joint1`。
 
-16 维状态是此格式的输入字段；相机为可选字段，没有图像的 MCAP 直接输出状态/动作 episode，不补造图像。完全缺少必要状态字段或损坏的 Protobuf/JPEG 会给出解析错误。单个数据集 schema 固定：首次转换按第一条的实际相机字段建表，同模态数据可以批量转换；相机字段不同的来源会具体报错并保留已成功的 episode，应分别输出到不同数据集。原厂 bundle 输入仍沿用其原有转换逻辑，详见原 README。
+`action`读取`/hal/joint_cmd.position`和`/wbc/left_ee_command`、`/wbc/right_ee_command`的指令位置；`observation.state`读取`/hal/joint_state.motor_position`及左右`/hal/*_ee_data`实测位置。HAL指令是原采集链的已有输出，不等同于遥操上游目标，也不代表直接重放完整HAL报文。
 
-## 运行环境
+24维数值保留float64及原单位，缺失值保存为Arrow NULL。缺少名称对应的位置不补0，不用实测反馈替代动作，不通过夹爪方向变换改写指令。`action_valid`、`observation.state_valid`记录各维有限数有效性；它们不删除或修复原值。
 
-使用同目录 `.venv` 的原官方 LeRobot v2.1 环境，另需 `mcap`、`protobuf`、`zstandard`、`lz4`（见 `requirements-mcap.txt`）。离线机器人部署可以将这些同机 Python 3.10 包放入 `conversion/extra_deps`；`run_platform.sh` 自动加入此路径。此程序只读数据文件，不导入或调用机器人控制 SDK。
+## 时间与原样本关联
 
-## 进度与失败任务继续
+每张真实头部RGB帧对应一行训练表：
 
-`--progress /path/progress.json` 每约 0.25 秒原子更新：`phase`、`source_index`（从 1 开始）、`total_sources`、`completed_sources`、`failed_sources`、`source_name`、`processed_frames`、`total_frames`、`percent`（整个任务 0–100）、`elapsed_s`、`bytes_read` 和 `total_bytes`。读取字节数来自实际 MCAP 文件读取；帧计数来自实际 writer，视频阶段来自编码器。处理完所有来源不代表全成功，必须同时看 `result.completed` 和 `result.errors`，错误列表仅属于本次运行。
+- 头部相机真实源时间为主轴；protobuf时间取报文Header的原始PTP纳秒。
+- 状态及腕部图像选择时间上最近的原始样本；动作保持该时刻之前最近一条原始指令。
+- 开头尚无已有指令时保留NULL，不复制未来动作；不会插值、删掉真实头帧或补造缺失视频帧。
+- `source_timestamp_ns`保留原始头部PTP；LeRobot的`timestamp=index/30`和MP4显示时间是格式索引，不替代真实源时间。
+- 时间倒序会报错，不自动重排、校时或修复。`provenance/frames.jsonl`保存被选原帧/话题/索引/时间及偏移供追溯。
 
-原目录恢复使用相同输入、task、repo-id、参数，加 `--resume`。如果原任务因缺少图像而失败且尚无 episode，会保留目录与原信息快照，仅把空数据集的相机 schema 更新为实际字段，然后继续。已有成功 episode 的数据集保持 schema；已提交来源不会重复追加。不会删除 MCAP 或用户目录。
+MCAP相机包中使用源相机时间，不使用辅助图像信封的本机墙钟去对齐机器人PTP。训练表只按真实头部帧取样；原文件回放读取全部指令事件，所以高频原始事件不会全部出现在视频主轴训练表中。
+
+## 当前MP4图像契约
+
+MCAP读取器可取得原JPEG字节，但当前MP4输出会把已选原帧解码成RGB再无损编码，保留解码像素，不宣称逐字节保存JPEG。原生H.265在帧映射完整一一对应且无B帧时直接封装HEVC；其余情况同样保存无损RGB MP4。图像保持原分辨率，不缩到256×256，不增加有损转码，也不再把PNG写进Parquet。
+
+至少需要真实头部RGB来构造训练表，其余相机只按源实际可用字段导出。不同记录的相机集合、分辨率或schema不一致时，已有数据集不会通过缩放或填图强行兼容，应使用另一输出目录。
+
+## 完成、训练与回放的边界
+
+转换完成记录在`provenance/SUCCESS`和结果JSON中；是否具备完整有限训练字段另看`provenance/conversion.json`的`training_ready`。标准固定版LeRobot/OpenPI loader可能在含NULL行报错，转换器不替用户补值、删帧或决定训练空值策略。
+
+回放的名称映射、原时间轴和NULL读取由[原回放说明](../replay/README.md)维护；新副本只对发送目标做限幅与平滑，见[独立副本说明](../replay/README_clamped_smooth.md)。转换数据本身不会应用回放限幅、反馈补值或自动姿态恢复。

@@ -1,3 +1,9 @@
+# 使用说明
+# 用途：单文件CLI参数、HTTP请求和本地下载契约测试；网络调用使用Mock。
+# 使用：在项目根目录运行 python3 -m unittest discover -s tests -p "test_*.py"。
+# 不要求平台服务或机器人SDK，不执行真实采集/转换/回放。
+# 说明：tests/README.md；被测入口是根目录datacp。
+#
 """Offline API-contract tests; no service or robot SDK is contacted."""
 import io
 import json
@@ -7,7 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock
 
-module = runpy.run_path(str(Path(__file__).with_name('datacp')))
+module = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'datacp'))
 
 
 class ContractTests(unittest.TestCase):
@@ -20,7 +26,7 @@ class ContractTests(unittest.TestCase):
         args = ['convert', '--repo-id', 'local/demo', '--task', '放进盒子']
         client, _ = self.call(args + ['--episode', '/data/A/episode_1', '--episode', '/data/A/episode_2'])
         client.call.assert_called_once_with('/api/conversion/start', {
-            'repo_id': 'local/demo', 'task': '放进盒子',
+            'repo_id': 'local/demo', 'task': '放进盒子', 'workers':2,'threads':2,
             'episode_paths': ['/data/A/episode_1', '/data/A/episode_2']})
         client, _ = self.call(args + ['--source-dir', '/data/A'])
         self.assertEqual(client.call.call_args.args[1]['source_dir'], '/data/A')
@@ -29,13 +35,15 @@ class ContractTests(unittest.TestCase):
     def test_plain_dataset_folder_and_shared_root(self):
         client, _ = self.call(['convert','--name','抓取任务 01','--task','抓取','--source-dir','/data/data/A'])
         client.call.assert_called_once_with('/api/conversion/start', {
-            'dataset_name':'抓取任务 01','task':'抓取','source_dir':'/data/data/A'})
+            'dataset_name':'抓取任务 01','task':'抓取','workers':2,'threads':2,'source_dir':'/data/data/A'})
         client, _ = self.call(['convert','--name','A','--task','抓取','--source-dir','/data/data/A','--output-dir','/data/train'])
         self.assertEqual(client.call.call_args.args[1]['output_dir'],'/data/train')
         client, _ = self.call(['datasets'])
         client.call.assert_called_once_with('/api/lerobot/datasets')
         client, _ = self.call(['lerobot-dir','/data/train'])
         client.call.assert_called_once_with('/api/workflow/settings',{'lerobot_root':'/data/train'})
+        client,_=self.call(['convert','--name','native','--task','移动','--source-dir','/data/record','--input-format','factory'])
+        self.assertEqual(client.call.call_args.args[1]['input_format'],'factory')
 
     def test_replay_payloads_select_full_episode(self):
         client, _ = self.call(['replay', '--dataset', '/data/local/demo', '--episode', '2'])
@@ -62,6 +70,19 @@ class ContractTests(unittest.TestCase):
         client.download.assert_called_once_with('/api/export/job/archive', '/tmp/raw.tar')
         client, _ = self.call(['export-lerobot', '--dataset', '/data/local/demo', '--output', '/tmp/demo.tar'])
         client.download.assert_called_once_with('/api/lerobot/export/archive?dataset=%2Fdata%2Flocal%2Fdemo', '/tmp/demo.tar')
+
+    def test_concurrency_and_native_endpoints(self):
+        client,_=self.call(['convert','--name','a','--task','move','--source-dir','/data/A','--workers','4','--threads','2'])
+        self.assertEqual(client.call.call_args.args[1]['workers'],4)
+        self.assertEqual(client.call.call_args.args[1]['threads'],2)
+        for cmd,path in [('native-inspect','/api/native/inspect'),('native-replay','/api/native/replay/start')]:
+            client,_=self.call([cmd,'--source','/data/record/A'])
+            client.call.assert_called_once_with(path,{'source':'/data/record/A'})
+        client=Mock();client.call.return_value={'archive_url':'/api/export/a/archive'}
+        args=module['parser']().parse_args(['export-native','--root','/data/record','--episode','/data/record/A','--episode','/data/record/B','--output','/tmp/native.tar'])
+        module['dispatch'](args,client)
+        client.call.assert_called_once_with('/api/export/prepare',{'input_format':'factory','root':'/data/record','episode_paths':['/data/record/A','/data/record/B']})
+        client.download.assert_called_once_with('/api/export/a/archive','/tmp/native.tar')
 
     def test_http_json_and_download_bytes(self):
         client = module['Client']('http://robot:18769/')

@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# 使用说明
+# 用途：G2 Linux aarch64 / Python3.10的独立转换环境安装。
+# 从项目根目录手动执行 ./conversion/install_robot.sh；会创建/更新 conversion/.venv 并安装依赖。
+# 代码与虚拟环境须在 /data 下，需 uv、Python3.10 和 vendor 固定LeRobot wheel。
+# 可用 R2_CONVERTER_PYTHON / R2_CONVERTER_VENV 指定解释器和环境。
+# 不启动采集或运动SDK；详细依赖与x86安装区别见 README.md。
+#
 # Explicit operator-run installation; never changes the system Python environment.
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,7 +17,7 @@ if sys.platform != 'linux' or platform.machine() != 'aarch64' or sys.version_inf
     raise SystemExit('This installation profile requires Linux aarch64 and Python 3.10')
 PY
 if [[ "${SCRIPT_DIR}" != /data/* || "${CONVERTER_ENV}" != /data/* ]]; then
-  echo 'Place the tool and its isolated environment under /data; see LINUX_DEPLOYMENT.md' >&2
+  echo 'Place the tool and its isolated environment under /data; see README.md' >&2
   exit 1
 fi
 if [[ ! -f "${SCRIPT_DIR}/vendor/lerobot-0.1.0-py3-none-any.whl" ]]; then
@@ -24,11 +31,13 @@ fi
 if [[ -d "${SCRIPT_DIR}/wheelhouse" ]]; then
   uv pip install --python "${CONVERTER_ENV}/bin/python" --only-binary :all: --no-index \
     --find-links "${SCRIPT_DIR}/wheelhouse" --find-links "${SCRIPT_DIR}/vendor" \
-    -r "${SCRIPT_DIR}/requirements-robot-linux.lock"
+    -r "${SCRIPT_DIR}/requirements-robot-linux.lock" \
+    -r "${SCRIPT_DIR}/requirements-mcap.txt"
 else
   uv pip install --python "${CONVERTER_ENV}/bin/python" --only-binary :all: \
     --find-links "${SCRIPT_DIR}/vendor" \
-    -r "${SCRIPT_DIR}/requirements-robot-linux.lock"
+    -r "${SCRIPT_DIR}/requirements-robot-linux.lock" \
+    -r "${SCRIPT_DIR}/requirements-mcap.txt"
 fi
 uv pip install --python "${CONVERTER_ENV}/bin/python" --no-deps \
   "${SCRIPT_DIR}/vendor/lerobot-0.1.0-py3-none-any.whl"

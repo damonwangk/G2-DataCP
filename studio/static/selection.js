@@ -1,3 +1,10 @@
+/*
+使用说明
+用途：整话题采集选择和MCAP回放关节选择。
+用法：由 app.py 提供的工作台页面加载，浏览器访问 http://机器人IP:18769/；不作为独立脚本启动。
+详细说明：../采集与预览使用说明.md
+*/
+/* 采集整话题与回放关节名称选择；选项不修改原始数据值。 */
 
 'use strict';
 let dataCatalog=null, fileContents=null, selectionFile=null;
@@ -35,13 +42,13 @@ function renderDataRates(s){
  $('#captureCount').textContent=dataCatalog?checkedValues('#captureSelection input[data-topic]').length+' / '+dataCatalog.topics.length+' 类已选':'正在加载';
  const report=rr.report||{},send=rr.running?rr.send_hz:report.send_average_hz,accepted=rr.running?rr.accepted_hz:report.accepted_average_hz;
  $('#replayRate').textContent=rr.kind==='posture'&&rr.running?'姿态恢复使用 SDK 点位指令，不是连续轨迹发送。':
-  '动作发送目标 100 Hz（每 10 ms） · '+(rr.running?'当前实测 ':report.sample_count?'上次平均 ':'实测 ')+
+  '原始指令事件 + 100 Hz 目标保持 · '+(rr.running?'当前实测 ':report.sample_count?'上次平均 ':'实测 ')+
   (Number.isFinite(send)?fmt(send,1)+' Hz':'尚无数据')+' · SDK 成功返回 '+(Number.isFinite(accepted)?fmt(accepted,1)+' Hz':'尚无数据')+
   (rr.paused?' · 已暂停时间推进，仍发送保持目标':'');
 }
 async function loadFileSelections(file){
  selectionFile=null;fileContents=null;$('#replayTargets').textContent='正在读取该记录包含的动作数据…';
- const contents=await api('/api/files/'+encodeURIComponent(file)+'/contents');
+ const contents=await api('/api/mcap/contents?file='+encodeURIComponent(file));
  if(selected!==file)return;
  fileContents=contents;selectionFile=file;
  $('#replayTargets').innerHTML=contents.motion_groups.map(g=>'<fieldset class="motion-group"><legend><label><input type="checkbox" data-motion-group="'+esc(g.id)+'" '+(g.names.length?'checked':'disabled')+'> '+esc(g.label)+(g.names.length?'':'（无数据）')+'</label></legend>'+g.names.map(n=>'<label class="joint-choice"><input type="checkbox" data-joint data-group="'+esc(g.id)+'" value="'+esc(n)+'" checked> '+esc(n)+'</label>').join('')+'</fieldset>').join('');
@@ -54,7 +61,7 @@ async function loadFileSelections(file){
  }));
  const labels=new Map((dataCatalog?.topics||[]).map(t=>[t.topic,t.label]));
  $('#previewTopics').innerHTML=contents.topics.map(t=>'<label class="preview-choice"><input type="checkbox" data-preview-topic value="'+esc(t)+'" checked> '+esc(labels.get(t)||t)+' <small>文件平均 '+fmt(contents.recorded_average_hz[t],1)+' Hz</small></label>').join('');
- $('#fileSelectionNote').textContent='已保存 '+contents.topics.length+' 类通道，可执行 '+contents.motion_names.length+' 个关节 / 夹爪。只下发勾选的名称与原始位置；未选部分不发送位置目标。';
+ $('#fileSelectionNote').textContent='已保存 '+contents.topics.length+' 类通道，可执行 '+contents.motion_names.length+' 个关节 / 夹爪。只下发勾选名称的原始控制目标，空值不补；未选部分不发送位置目标。';
 }
 action('#captureAll',()=>{document.querySelectorAll('#captureSelection input').forEach(n=>n.checked=true);saveCapturePreferences();if(current)renderDataRates(current);});
 action('#captureNone',()=>{document.querySelectorAll('#captureSelection input').forEach(n=>n.checked=false);saveCapturePreferences();if(current)renderDataRates(current);});

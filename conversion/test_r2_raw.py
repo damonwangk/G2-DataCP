@@ -1,3 +1,9 @@
+# 使用说明
+# 用途：历史bundle解析器的格式边界及畸形输入回归。
+# 从项目根目录运行：./conversion/.venv/bin/python -m unittest discover -s conversion -p "test_r2_raw.py" -v
+# 仅使用临时目录、合成数据或Fake依赖，不启动真实SDK、不发送机器人动作。
+# 测试分组、依赖环境及历史兼容范围见 README.md。
+#
 """Parser regression tests: malformed inputs must fail before conversion."""
 import struct
 import tempfile

@@ -1,4 +1,9 @@
-"""Explicit posture restore worker. Imported by offline tests without importing GDK."""
+# 使用说明
+# 用途：已保存实测姿态的恢复worker，先恢复本体再恢复双夹爪并读取反馈。
+# 用法：由网页姿态恢复经 RobotJob 调度，参数 --pose 姿态MCAP --run 任务目录 --trace 新MCAP路径；不是只读检查，运行会发动作。
+# 详细说明：回放与姿态使用说明.md
+
+"""恢复已保存的实测姿态：本体点位控制后恢复双夹爪，并核对实际反馈。"""
 import argparse
 import json
 from pathlib import Path
@@ -29,8 +34,10 @@ def execute(robot,g,pose,emit,stopping):
         req=g.JointControlReq();req.life_time=1.;req.joint_names=JOINT_NAMES;req.joint_positions=list(q[:22]);req.joint_velocities=[.3]
         if robot.joint_control_request(req)!=0:raise RuntimeError('本体姿态指令发送失败')
     def grips(q):
+        # Dahuan 的 SDK 控制坐标与 end_state 实测坐标方向相反。
+        # 保存文件保持实测值；仅在恢复接口边界换算，双侧分别取各自保存值。
         for side,v in zip(['left_tool','right_tool'],q[22:]):
-            req=g.JointStates();req.group=side;req.target_type='dahuan';item=g.JointState();item.position=float(v);req.states=[item];req.nums=1
+            req=g.JointStates();req.group=side;req.target_type='dahuan';item=g.JointState();item.position=.025-float(v);req.states=[item];req.nums=1
             if robot.move_ee_pos(req)!=0:raise RuntimeError('夹爪姿态指令发送失败')
     stamp,current=observed();timeout=max(10.,max(abs(a-b) for a,b in zip(current[:22],target[:22]))/.2+8.)
     body(target)

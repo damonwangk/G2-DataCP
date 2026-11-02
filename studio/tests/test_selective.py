@@ -1,3 +1,9 @@
+# 使用说明
+# 用途：平台离线回归测试：selective。
+# 用法：在studio目录执行 python -m unittest tests.test_selective（已配置依赖的Python）；使用模拟SDK/API，不运行真机任务。
+# 详细说明：../README.md
+
+"""整话题采集、部分关节原指令和NULL回放的离线回归。"""
 import json,tempfile,time,unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -33,7 +39,7 @@ class Selective(unittest.TestCase):
   _,out=self.record(['/hal/joint_state'],[self.fixture.joint(1_000_000_000),self.fixture.joint(1_100_000_000)])
   names=[JOINT_NAMES[0],JOINT_NAMES[8]]
   t=robot_replay.Trajectory(out['path'],self.schemas,controlled_names=names)
-  self.assertEqual(t.names,names);self.assertEqual(t.at(.05),[.1,.1]);self.assertEqual(t.joint_count,2)
+  self.assertEqual(t.names,names);self.assertEqual(t.at(.05),[None,None]);self.assertEqual(t.joint_count,2)
   latest={'/hal/joint_state':self.fixture.joint(2_000_000_000)}
   p=robot_replay.plan(out['path'],self.schemas,latest=latest,controlled_names=names)
   self.assertTrue(p['ready']);self.assertEqual(p['gripper_types'],{})
@@ -72,7 +78,11 @@ class Selective(unittest.TestCase):
    response=client.post('/api/replay/start',json={'file':'fake','confirm_motion':True,'controlled_names':[JOINT_NAMES[0]]})
    self.assertEqual(response.status_code,200);self.assertEqual(job.return_value.start.call_args.kwargs['controlled_names'],[JOINT_NAMES[0]])
  def test_fake_sdk_receives_only_selected_joint_or_gripper(self):
-  for name,topic,event in [(JOINT_NAMES[0],'/hal/joint_state',self.fixture.joint(1_000_000_000)),(GRIP_NAMES[0],'/hal/left_ee_data',self.fixture.grip(0,1_000_000_000))]:
+  cases=[]
+  for name,topic in [(JOINT_NAMES[0],'/hal/joint_cmd'),(GRIP_NAMES[0],'/wbc/left_ee_command')]:
+   message=self.schemas.get('genie_msgs.msg.pb.JointCommand')();message.name.append(name);message.position.append(.01)
+   event=self.fixture.event(topic,message.DESCRIPTOR.full_name,1_000_000_000,message=message);cases.append((name,topic,event))
+  for name,topic,event in cases:
    with self.subTest(name=name):
     _,out=self.record([topic],[event])
     sent=[];q=[0.]

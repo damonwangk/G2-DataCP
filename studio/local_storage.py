@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：网页连接同机采集服务的适配器；当前不自动传输记录文件。
+# 用法：内部模块，由 app.py 创建；采集目录和开始/结束操作通过网页或 datacp 完成。
+# 详细说明：采集与预览使用说明.md
+
 """Web console and recorder run on the same robot. No automatic file transfer."""
 from pathlib import Path
 from robot_storage import RobotStorage

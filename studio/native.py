@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：Aorta TCP订阅、源报文解码、Protobuf schema和相机数据接收。
+# 用法：内部模块，由采集后台和网页调用；不单独启动，不初始化运动SDK。
+# 详细说明：采集与预览使用说明.md
+
 """R2 native Aorta TCP receiver. No SDK initialization and no control publication."""
 import base64
 from collections import deque
@@ -161,6 +166,25 @@ def decode(frame, typ, schemas):
     return meta, data, None
 
 
+def event_from_frame(frame, publisher, schemas, wall_ns, mono_ns):
+    """解析只供显示：解析失败仍交付原包给采集器，不丢包、不改字节。"""
+    error = ''
+    try:
+        meta, data, image = decode(frame, publisher['type'], schemas)
+    except Exception as exc:
+        error = str(exc)
+        meta = {'sequence': U64(frame,80), 'aorta_sequence': U32(frame,24),
+                'publish_ptp_ns': str(U64(frame,48)), 'publish_utc_label_ns': str(U64(frame,56)),
+                'envelope_source_ns': str(U64(frame,96)), 'decode_error': error}
+        data, image = {}, None
+        if publisher['type'] == 'CosineDataPacket' and len(frame) >= 176:
+            meta.update(width=U32(frame,161),height=U32(frame,165),encoding=frame[169],
+                        source_ns=str(U64(frame,144)))
+            image = frame[176:]
+    return dict(topic=publisher['topic'],publisher=publisher,frame=frame,wall_ns=wall_ns,
+                mono_ns=mono_ns,meta=meta,data=data,image=image,decode_error=error)
+
+
 class Receiver:
     def __init__(self, host, schemas, callback, topics=None, connect_host=None):
         self.host, self.schemas, self.callback = host, schemas, callback
@@ -208,15 +232,15 @@ class Receiver:
                             raise ConnectionError('Publisher disconnected')
                         for frame in framer.feed(chunk):
                             wall, mono = time.time_ns(), time.monotonic_ns()
-                            meta, data, image = decode(frame, publisher['type'], self.schemas)
-                            event = dict(topic=publisher['topic'], publisher=publisher, frame=frame,
-                                wall_ns=wall, mono_ns=mono, meta=meta, data=data, image=image)
+                            event = event_from_frame(frame, publisher, self.schemas, wall, mono)
+                            meta = event['meta']
                             with self.lock:
                                 state['count'] += 1
                                 state['bytes'] += len(frame)
                                 state['last_mono'] = mono
                                 state['times'].append(mono)
-                                state['error'] = ''
+                                state['error'] = event['decode_error']
+                                if event['decode_error']: state['errors'] += 1
                                 seq = meta['sequence']
                                 if previous is not None:
                                     if seq > previous + 1:

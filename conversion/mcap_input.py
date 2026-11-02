@@ -1,165 +1,128 @@
-"""Offline adapter for platform MCAP. Reads embedded schemas, never imports a robot SDK."""
-from bisect import bisect_left
+# 使用说明
+# 用途：读取自采MCAP原始protobuf及相机包，保留时间和值。
+# 使用：经 run_platform.sh --input-format mcap 调用，不独立启动。
+# 多文件使用说明：PLATFORM_MCAP.md 的MCAP输入契约。
+#
+"""读取自采 MCAP 的原始话题和头部帧；保留 float64、空值和原始 PTP。
+
+关节使用原 protobuf 字节；图像直接读取 /raw/camera/* 中的 JPEG。
+不使用辅助图像信封的本机墙钟，不插帧、不缩放、不重编码 JPEG。
+"""
 from collections import Counter
 import io
 from pathlib import Path
+import struct
+
 import numpy as np
 from mcap.reader import make_reader
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+from recording_contract import (CAMERAS, ARM_NAMES as ARMS, GRIPS, STATE, ACTION,
+    Sample, positions, source_time, head_plan)
 
-CAMERAS = ('head_color', 'hand_left_color', 'hand_right_color')
-ARMS = [f'idx{21+i}_arm_l_joint{i+1}' for i in range(7)] + [f'idx{61+i}_arm_r_joint{i+1}' for i in range(7)]
-GRIPS = ['idx31_gripper_l_inner_joint1', 'idx71_gripper_r_inner_joint1']
-STATE = ('/hal/joint_state', '/hal/left_ee_data', '/hal/right_ee_data')
-ACTION = ('/hal/joint_cmd', '/wbc/left_ee_command', '/wbc/right_ee_command')
 IMAGE = {cam: f'/camera/{cam}/image' for cam in CAMERAS}
+RAW_IMAGE = {cam: f'/raw/camera/{cam}' for cam in CAMERAS}
 
 
-class ReadMeter:
-    """Measure unique source-file bytes, so summary seeks do not jump to 100%."""
-    def __init__(self,stream,callback):
-        self.stream=stream;self.callback=callback;self.ranges=[]
-    def __getattr__(self,name):return getattr(self.stream,name)
-    def read(self,size=-1):
-        start=self.stream.tell();data=self.stream.read(size);end=start+len(data)
-        if data:
-            ranges=[]
-            for lo,hi in self.ranges:
-                if hi<start or lo>end:ranges.append((lo,hi))
-                else:start=min(start,lo);end=max(end,hi)
-            ranges.append((start,end));self.ranges=ranges
-            self.callback(sum(hi-lo for lo,hi in ranges))
-        return data
+def schema_class(data, name):
+    """从文件携带的描述符构造 protobuf 类，不导入运动 SDK。"""
+    pool = descriptor_pool.DescriptorPool()
+    pending = list(descriptor_pb2.FileDescriptorSet.FromString(data).file)
+    while pending:
+        remaining = []
+        for fd in pending:
+            try: pool.Add(fd)
+            except (TypeError, KeyError): remaining.append(fd)
+        if len(remaining) == len(pending):
+            raise ValueError('protobuf 描述符依赖无法解析')
+        pending = remaining
+    return message_factory.GetMessageClass(pool.FindMessageTypeByName(name))
+
+
+def messages(path, topics, on_read=None):
+    """读取原 protobuf 通道；供离线检查和测试复用。"""
+    classes = {}
+    with Path(path).open('rb') as stream:
+        for schema, channel, message in make_reader(stream).iter_messages(topics=topics):
+            if schema is None or channel.message_encoding != 'protobuf':
+                raise ValueError(f'{channel.topic}: 缺少原 protobuf 描述符')
+            if schema.id not in classes:
+                classes[schema.id] = schema_class(schema.data, schema.name)
+            yield channel.topic, message, classes[schema.id].FromString(message.data)
+            if on_read: on_read(stream.tell())
 
 
 def available_cameras(path):
     with Path(path).open('rb') as stream:
-        reader=make_reader(stream);summary=reader.get_summary()
+        reader = make_reader(stream); summary = reader.get_summary()
         if summary and summary.statistics:
-            present={c.topic for c in summary.channels.values() if summary.statistics.channel_message_counts.get(c.id,0)}
-        else:present={channel.topic for _,channel,_ in reader.iter_messages(topics=list(IMAGE.values()))}
-    return tuple(cam for cam,topic in IMAGE.items() if topic in present)
-
-
-def messages(path, topics, on_read=None):
-    classes = {}
-    with Path(path).open('rb') as stream:
-        for schema, channel, message in make_reader(ReadMeter(stream,on_read) if on_read else stream).iter_messages(topics=topics):
-            if schema is None or channel.message_encoding != 'protobuf':
-                raise ValueError(f'{channel.topic}: embedded Protobuf schema is required')
-            if schema.id not in classes:
-                pool = descriptor_pool.DescriptorPool()
-                pending = list(descriptor_pb2.FileDescriptorSet.FromString(schema.data).file)
-                while pending:
-                    remaining = []
-                    for fd in pending:
-                        try: pool.Add(fd)
-                        except (TypeError, KeyError): remaining.append(fd)
-                    if len(remaining) == len(pending): raise ValueError('MCAP schema dependency cannot be resolved')
-                    pending = remaining
-                descriptor = pool.FindMessageTypeByName(schema.name)
-                classes[schema.id] = message_factory.GetMessageClass(descriptor)
-            yield channel.topic, message, classes[schema.id].FromString(message.data)
-
-
-def positions(topic, value):
-    names = list(value.name)
-    expected = ARMS if topic in (STATE[0], ACTION[0]) else [GRIPS[0] if 'left' in topic else GRIPS[1]]
-    if topic == STATE[0]: values = list(value.motor_position)
-    elif topic in STATE[1:]:
-        values = [x.position if x.HasField('position') else None for x in value.end_state]
-    else: values = list(value.position)
-    if len(names) != len(values) or len(set(names)) != len(names):
-        raise ValueError(f'{topic}: missing/ambiguous name-to-position mapping')
-    mapping = dict(zip(names, values))
-    if any(n not in mapping or mapping[n] is None for n in expected):
-        raise ValueError(f'{topic}: required arm/gripper positions absent')
-    row = np.asarray([mapping[n] for n in expected], dtype=np.float32)
-    if not np.isfinite(row).all(): raise ValueError(f'{topic}: nonfinite positions')
-    return row
-
-
-def nearest(times, target):
-    at = bisect_left(times, target)
-    choices = [i for i in (at-1, at) if 0 <= i < len(times)]
-    return min(choices, key=lambda i: (abs(times[i]-target), i))
-
-
-def make_plan(path, fps=30, max_offset_ms=None, max_camera_age_ms=None, max_gap_ms=None, progress=None):
-    """Map each source to one episode, without filtering gaps or clipping values.
-
-    MCAP clock domains differ, so the training grid uses recorder log_time. Original
-    command topics are preferred; an absent/unparseable command uses the recorded
-    corresponding state trajectory and is identified in per-frame provenance.
-    """
-    path = Path(path)
-    topics = (*STATE, *ACTION, *IMAGE.values())
-    samples = {t: [] for t in topics}; counts = Counter(); parse_notes = Counter()
-    size=path.stat().st_size
-    def on_read(count):
-        if progress:progress.update('读取源文件',fraction=.30*min(count/max(size,1),1),bytes_read=count,total_bytes=size)
-    for topic, message, value in messages(path, topics, on_read):
-        index = counts[topic]; counts[topic] += 1
-        if topic in IMAGE.values():
-            if value.format.lower() not in ('jpeg', 'jpg') or not value.data:
-                raise ValueError(f'{topic}: expected source JPEG')
-            data = None
+            present = {c.topic for i, c in summary.channels.items() if summary.statistics.channel_message_counts.get(i, 0)}
         else:
-            try: data = positions(topic, value)
-            except ValueError as exc:
-                if topic not in ACTION: raise
-                data = None; parse_notes[str(exc)] += 1
-        samples[topic].append((message.log_time, data, index, message.publish_time))
-    cameras={cam:topic for cam,topic in IMAGE.items() if samples[topic]}
-    required = (*STATE, *cameras.values())
-    missing = [t for t in required if not samples[t]]
-    if missing: raise ValueError('MCAP缺少16维状态的必要格式字段: '+', '.join(missing))
-    times = {t: [r[0] for r in rows] for t, rows in samples.items()}
-    start = min(times[t][0] for t in required); end = max(times[t][-1] for t in required)
-    frames = (end-start)*fps//1_000_000_000+1
-    if progress:progress.update('映射状态与动作',fraction=.30,force=True,total_frames=frames)
-    segment = []; action_sources = Counter()
-    for grid_index in range(frames):
-        if progress:progress.update('映射状态与动作',fraction=.30+.05*grid_index/max(frames,1))
-        stamp = start+round(grid_index*1_000_000_000/fps)
-        chosen = {t: samples[t][nearest(times[t], stamp)] for t in required}
-        sources = {}
-        for command, state in zip(ACTION, STATE):
-            row = samples[command][nearest(times[command], stamp)] if samples[command] else None
-            source = command if row is not None and row[1] is not None else state
-            chosen[command] = row if source == command else chosen[state]
-            sources[command] = source
-            action_sources[source] += 1
-        def vector(keys):
-            arm, left, right = [chosen[t][1] for t in keys]
-            return np.concatenate((arm[:7], left, arm[7:], right)).astype(np.float32)
-        segment.append({'grid_index':grid_index, 'grid_timestamp_ns':stamp, 'record_timestamp_ns':stamp,
-                        'state':vector(STATE), 'action':vector(ACTION), 'action_sources':sources,
-                        'source_samples':{t:{'source_topic':sources.get(t,t),'index':r[2],'log_time_ns':r[0],'publish_time_ns':r[3],'offset_ns':r[0]-stamp} for t,r in chosen.items() if t not in IMAGE.values()},
-                        'cameras':{cam:{'index':chosen[t][2],'timestamp_ns':chosen[t][0],'publish_time_ns':chosen[t][3],'offset_ns':chosen[t][0]-stamp} for cam,t in cameras.items()}})
-    return [segment], {'source':str(path),'input_format':'platform_mcap','clock':'MCAP log_time recording-host receive time',
-        'messages':dict(counts),'command_parse_notes':dict(parse_notes),'grid_frames':frames,
-        'mapping':'nearest recorded sample; no gap, offset or range filtering; one source MCAP per episode',
-        'action_sources':dict(action_sources),'segment_lengths':[frames],
-        'export_frames':frames, 'available_cameras':list(cameras), 'camera_index_counts':{cam:counts[t] for cam,t in cameras.items()}}
+            present = {c.topic for _, c, _ in reader.iter_messages(topics=list(RAW_IMAGE.values()))}
+    return tuple(cam for cam, topic in RAW_IMAGE.items() if topic in present)
+
+
+def camera_packets(path, camera):
+    with Path(path).open('rb') as stream:
+        for _, channel, message in make_reader(stream).iter_messages(topics=[RAW_IMAGE[camera]]):
+            yield message
+
+
+def camera_payload(data):
+    """只拆出 Aorta 原包里的相机源时间和 JPEG，不改变内容。"""
+    if len(data) < 176 or struct.unpack_from('<I', data, 172)[0]+176 != len(data):
+        raise ValueError('原始相机包长度不匹配')
+    if data[169] != 1 or data[176:178] != b'\xff\xd8':
+        raise ValueError('原始 RGB 相机包不是 JPEG')
+    return struct.unpack_from('<Q', data, 144)[0], data[176:]
+
+
+def read_recording(path, progress=None):
+    """读取全部原始样本；转换与原文件回放共用，读取时不重采样。"""
+    path = Path(path); counts = Counter(); classes = {}
+    samples = {t: [] for t in (*STATE, *ACTION)}
+    cameras = {cam: [] for cam in available_cameras(path)}
+    raw_to_camera = {RAW_IMAGE[cam]: cam for cam in cameras}
+    size = path.stat().st_size
+    with path.open('rb') as stream:
+        topics = [*STATE, *ACTION, *raw_to_camera]
+        for schema, channel, message in make_reader(stream).iter_messages(topics=topics):
+            topic = channel.topic; index = counts[topic]; counts[topic] += 1
+            if topic in raw_to_camera:
+                cam = raw_to_camera[topic]; stamp, _jpeg = camera_payload(message.data)
+                cameras[cam].append(Sample(index, stamp, message.log_time, message.publish_time))
+            else:
+                if schema is None or channel.message_encoding != 'protobuf':
+                    raise ValueError(f'{topic}: 缺少原 protobuf 描述符')
+                if schema.id not in classes: classes[schema.id] = schema_class(schema.data, schema.name)
+                value = classes[schema.id].FromString(message.data)
+                samples[topic].append(Sample(index, source_time(value), message.log_time,
+                                             message.publish_time, positions(topic, value)))
+            if progress: progress.update('读取原始 MCAP', fraction=.30*min(stream.tell()/max(size, 1), 1))
+    return samples, cameras
+
+
+def make_plan(path, fps=30, max_offset_ms=None, max_camera_age_ms=None, max_gap_ms=None, progress=None, **_):
+    samples, cameras = read_recording(path, progress)
+    return head_plan(samples, cameras, path, 'platform_mcap', progress)
 
 
 class CameraReader:
-    def __init__(self, path, camera, count, size, threads=1):
-        self.iterator = iter(messages(path, [IMAGE[camera]]))
-        self.index, self.count, self.size, self.image = -1, count, size, None
-    def get(self, wanted):
-        from PIL import Image, ImageOps
-        if wanted < self.index: raise ValueError('MCAP camera index moved backwards')
+    """按原帧序号读取 JPEG；压缩字节可直接嵌入 LeRobot image 列。"""
+    def __init__(self, path, camera, count, size=None, threads=1):
+        self.iterator = iter(camera_packets(path, camera))
+        self.index, self.count, self.jpeg = -1, count, None
+    def encoded(self, wanted):
+        if wanted < self.index: raise ValueError('相机帧号倒序')
         while self.index < wanted:
-            try: _, _, msg = next(self.iterator)
-            except StopIteration as exc: raise ValueError('MCAP camera stream shorter than planned') from exc
-            self.index += 1
-            self.image = Image.open(io.BytesIO(msg.data)).convert('RGB')
-        return np.asarray(ImageOps.pad(self.image, (self.size,self.size), method=Image.Resampling.BILINEAR,color=(0,0,0)),dtype=np.uint8)
+            try: message = next(self.iterator)
+            except StopIteration as exc: raise ValueError('原始相机帧少于索引') from exc
+            self.index += 1; _, self.jpeg = camera_payload(message.data)
+        return self.jpeg
+    def get(self, wanted):
+        from PIL import Image
+        return np.asarray(Image.open(io.BytesIO(self.encoded(wanted))).convert('RGB'))
     def finish(self):
         for _ in self.iterator: self.index += 1
-        if self.index+1 != self.count: raise ValueError('MCAP image message count changed')
+        if self.index+1 != self.count: raise ValueError('原始相机帧数改变')
     def close(self):
-        close = getattr(self.iterator, 'close', None)
-        if close: close()
+        self.iterator.close()

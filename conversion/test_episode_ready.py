@@ -1,3 +1,9 @@
+# 使用说明
+# 用途：采集完成标记的显式确认、文件清单及变更校验。
+# 从项目根目录运行：./conversion/.venv/bin/python -m unittest discover -s conversion -p "test_episode_ready.py" -v
+# 仅使用临时目录、合成数据或Fake依赖，不启动真实SDK、不发送机器人动作。
+# 测试分组、依赖环境及历史兼容范围见 README.md。
+#
 import json
 import os
 from pathlib import Path

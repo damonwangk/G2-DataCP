@@ -1,3 +1,9 @@
+# 使用说明
+# 用途：平台离线回归测试：record_filter。
+# 用法：在studio目录执行 python -m unittest tests.test_record_filter（已配置依赖的Python）；使用模拟SDK/API，不运行真机任务。
+# 详细说明：../README.md
+
+"""采集保真回归：温度/原包/NULL语义及无法解码的负载均不被过滤。"""
 import copy
 import json
 from pathlib import Path
@@ -7,6 +13,7 @@ import time
 import unittest
 from unittest.mock import patch
 from mcap.reader import make_reader
+from tests.synthetic_fixtures import synthetic_camera_frame
 from native import ROOT,Schemas,decode
 from storage import Recorder,raw_events
 from record_filter import POLICY
@@ -17,7 +24,7 @@ import storage
 
 class DatasetSelection(unittest.TestCase):
     def setUp(self):
-        self.schemas=Schemas();self.camera=(ROOT/'evidence/camera_head_color_cosine_runner.bin').read_bytes()
+        self.schemas=Schemas();self.camera=synthetic_camera_frame()
     def event(self,topic,typ,stamp,seq=0,message=None):
         header=bytearray(self.camera[:128])
         if message is None:
@@ -66,6 +73,17 @@ class DatasetSelection(unittest.TestCase):
             # Filtering must not mutate receiver caches or the original incoming bytes.
             self.assertEqual(joint['data']['temperature'],[42.5]*14)
             self.assertEqual(grip['data']['end_state'][0]['temperature'],33.25)
+    def test_undecodable_camera_payload_is_still_saved_as_original_raw_bytes(self):
+        from native import event_from_frame
+        frame=bytearray(self.camera);frame[-2:]=b'xx'
+        publisher={'uid':'malformed-camera','topic':'/camera/head_color','type':'CosineDataPacket'}
+        event=event_from_frame(bytes(frame),publisher,self.schemas,10**18,time.monotonic_ns())
+        self.assertTrue(event['decode_error'])
+        with tempfile.TemporaryDirectory() as tmp,patch.object(storage,'data_dir',return_value=Path(tmp)):
+            recorder=Recorder(self.schemas);recorder.start('raw',[]);recorder.ingest(event);out=recorder.stop([])
+            with Path(out['path']).open('rb') as f:
+                raw=next(m.data for _,c,m in make_reader(f).iter_messages() if c.topic=='/raw/camera/head_color')
+            self.assertEqual(raw,bytes(frame));self.assertEqual(out['counts']['/camera/head_color'],1)
     def test_collection_does_not_require_online_topics(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(storage,'data_dir',return_value=Path(tmp)):
             recorder=Recorder(self.schemas)

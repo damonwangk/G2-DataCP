@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：旧版MCAP对齐与质量分析工具；当前原始采集/保真转换不会自动调用。
+# 用法：在studio目录执行 python3 pipeline.py /绝对路径/raw.mcap；生成旁路 .aligned-v2.mcap 与 .aligned-v2.quality.json，包含关节观测插值，不覆盖原MCAP。
+# 详细说明：README.md
+
 """Raw MCAP -> source-time alignment -> aligned MCAP + quality JSON. No LeRobot export."""
 from bisect import bisect_left, bisect_right
 from collections import defaultdict, Counter
@@ -10,7 +15,7 @@ from mcap.reader import make_reader
 from mcap.writer import Writer, CompressionType
 from native import ROOT, CAMERAS, Schemas
 from storage import dumps, raw_events
-from record_filter import remove_temperatures, POLICY
+from record_filter import POLICY
 
 JOINT='/hal/joint_state'
 GRIPPERS=['/hal/left_ee_data','/hal/right_ee_data']

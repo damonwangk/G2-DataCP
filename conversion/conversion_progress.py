@@ -1,15 +1,24 @@
+# 使用说明
+# 用途：原子写入转换进度JSON，供CLI和工作台读取。
+# 使用：由 platform_convert.py / raw_convert.py 导入，不独立启动。
+# 多文件使用说明：README.md 的“进度、结果与恢复”。
+#
 """Atomic, throttled job progress. No timing simulation or robot dependencies."""
 import json
 from pathlib import Path
 import time
+import threading
 
 class Progress:
     def __init__(self,path=None):
+        self.lock=threading.RLock()
         self.path=Path(path) if path else None;self.started=time.monotonic();self.last_write=0.
         self.value=dict(phase='准备',source_index=0,total_sources=0,completed_sources=0,failed_sources=0,
             source_name='',processed_frames=0,total_frames=None,percent=0.,elapsed_s=0.,bytes_read=0,total_bytes=None)
         self.update(force=True)
     def update(self,phase=None,fraction=None,force=False,**fields):
+        with self.lock:return self._update(phase,fraction,force,**fields)
+    def _update(self,phase=None,fraction=None,force=False,**fields):
         if phase is not None:self.value['phase']=phase
         self.value.update(fields)
         if fraction is not None and self.value['total_sources']:

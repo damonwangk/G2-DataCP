@@ -1,3 +1,9 @@
+/*
+使用说明
+用途：前端离线回归测试：replay界面交互。
+用法：在studio目录执行 node tests/replay_ui_test.cjs；使用虚拟DOM/API，不启动网页或机器人任务。
+详细说明：../README.md
+*/
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const nodes=new Map();
 const node=key=>{if(!nodes.has(key))nodes.set(key,{textContent:'',innerHTML:'',value:'',hidden:false,disabled:false,dataset:{},style:{},classList:{toggle(){},add(){},remove(){}},handlers:{},addEventListener(k,f){this.handlers[k]=f},querySelectorAll(){return []}});return nodes.get(key)};
@@ -63,6 +69,18 @@ async function check(name,fn){try{await fn();console.log('PASS',name)}catch(e){f
   ctx.fetch=async(path,opts)=>{calls.push({path,body:opts.body?JSON.parse(opts.body):null});return {ok:true,json:async()=>path==='/api/record/next'?{saved:{file:'episode_1_time'},recording:{file:'episode_2_time'}}:{files:[],counts:{}}}};
   await node('#nextRecord').handlers.click();assert.deepEqual(calls[0],{path:'/api/record/next',body:{label:'take',pose_id:'pose',topics:['/hal/joint_state']}});
   assert(calls.every(c=>!c.path.includes('/api/replay/')&&!c.path.includes('/api/poses/')));assert.match(node('#notice').textContent,/episode_2_time/);
+ });
+ await check('delete cancellation preserves selected pose and sends nothing',async()=>{
+  vm.runInContext("poseCatalog=[{id:'pose_delete',label:'测试姿态'}]",ctx);node('#poseSelect').value='pose_delete';
+  let calls=0;ctx.confirm=()=>false;ctx.fetch=async()=>{calls++;throw Error('must not send')};
+  await node('#deletePose').handlers.click();assert.equal(calls,0);assert.equal(node('#poseSelect').value,'pose_delete');
+ });
+ await check('delete removes selected pose without starting robot motion',async()=>{
+  const calls=[];ctx.confirm=()=>true;
+  ctx.fetch=async(path,opts)=>{calls.push({path,method:opts.method});return {ok:true,json:async()=>path==='/api/poses'?{poses:[]}:{deleted:true}}};
+  await node('#deletePose').handlers.click();
+  assert.deepEqual(calls,[{path:'/api/poses/pose_delete/delete',method:'POST'},{path:'/api/poses',method:'GET'}]);
+  assert.equal(node('#poseSelect').value,'');assert.equal(node('#deletePose').disabled,true);assert.match(node('#notice').textContent,/已删除姿态/);
  });
  process.exitCode=failures?1:0;
 })();

@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：网页/API总入口，协调采集、MCAP预览、姿态和数据工作流。
+# 用法：在项目根目录执行 ./start.sh，再访问 http://机器人IP:18769/；不要用 python app.py 启动。
+# 详细说明：README.md
+
 """Robot-local collection console: live view, MCAP recording, playback and trajectory review."""
 from contextlib import asynccontextmanager
 import io
@@ -15,6 +20,7 @@ from native import ROOT, CAMERAS, Receiver, Schemas
 from storage import Recorder, Playback, data_dir, select_directory, browse_directory, list_files, file_path, validate
 
 from selection import catalog, motion_inventory
+import mcap_files
 
 schemas= Schemas()
 from robot_storage import RobotStorage, RemoteReceiver
@@ -26,7 +32,7 @@ def on_event(event):
     limit_monitor.observe(event)
 receiver=RemoteReceiver(recorder)
 playback= Playback(schemas)
-from postures import limit_status, list_poses, save_pose, pose_path, load_pose, pose_plan
+from postures import limit_status, list_poses, save_pose, pose_path, load_pose, pose_plan, delete_pose
 
 startup_error=''
 robot_job=None
@@ -122,7 +128,8 @@ def record_next(body:dict=Body(default={})):
     context={}
     if body.get('pose_id'):
         context={'selected_posture':load_pose(pose_path(body['pose_id'])),'posture_id':body['pose_id']}
-    command={'label':str(body.get('label','episode')),'context':context}
+    command={'context':context}
+    if 'label' in body:command['label']=str(body['label'])
     if body.get('topics') is not None:command['topics']=body['topics']
     return recorder.next_episode(command)
 
@@ -138,6 +145,26 @@ def files(category:str='collection'):
     return {'files':[r for r in rows if category=='all' or r['category']==category],
             'counts':{k:sum(r['category']==k for r in rows) for k in ('collection','feedback','test')},
             'data_dir':str(data_dir())}
+
+
+@app.get('/api/mcap/files')
+def mcap_source_files(path:str|None=None):
+    return mcap_files.listing(path, data_dir())
+
+
+@app.get('/api/mcap/browse')
+def mcap_source_browse(path:str|None=None):
+    return mcap_files.browse(path, data_dir())
+
+
+@app.get('/api/mcap/contents')
+def mcap_source_contents(file:str):
+    return motion_inventory(file_path(file), schemas)
+
+
+@app.post('/api/mcap/validate')
+def mcap_source_validate(body:dict=Body(...)):
+    return validate(file_path(body['file']), schemas)
 
 @app.get('/api/files/{name}/download')
 def download(name:str):
@@ -231,6 +258,12 @@ def poses():
 def pose_save(body:dict=Body(default={})):
     return save_pose(snapshot('live'),str(body.get('label','初始姿态')))
 
+@app.post('/api/poses/{identity}/delete')
+def pose_delete(identity:str):
+    # 恢复工作进程会读取姿态文件，执行期间避免移动该文件。
+    if robot_job and (robot_job.running or robot_job.preparing):raise ValueError('请先结束当前机器人动作，再删除姿态')
+    return delete_pose(identity)
+
 @app.post('/api/poses/{identity}/plan')
 def pose_check(identity:str):
     return pose_plan(pose_path(identity),snapshot('live'))
@@ -290,8 +323,8 @@ def robot_storage_import(body:dict=Body(...)):
 
 
 @app.get('/api/library/tree')
-def library_tree(path:str|None=None):
-    return library.tree(path)
+def library_tree(path:str|None=None,input_format:str='mcap'):
+    return library.tree(path,input_format)
 
 @app.get('/api/library/directories')
 def library_directories(path:str|None=None):

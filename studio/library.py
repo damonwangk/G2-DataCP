@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：机器人记录目录树、已完成MCAP解析、导出选择和删除实现。
+# 用法：内部模块；使用网页目录管理或 datacp library/export-*；删除所选MCAP会实际移除文件。
+# 详细说明：数据管理与转换调度使用说明.md
+
 """Robot-local episode folders. Inspect filenames/sidecars, never transform MCAP."""
 import json
 import os
@@ -5,7 +10,7 @@ import re
 import shutil
 from pathlib import Path
 from native import ROOT
-from storage import data_dir, dumps, record_category, remember_episode_number
+from storage import data_dir, dumps, record_category, remember_episode_number, episode_number_from_name
 
 SETTINGS = ROOT / 'config' / 'library.json'
 
@@ -54,13 +59,23 @@ def episode_row(p):
 def is_episode_file(p):
     return p.suffix == '.mcap' and not ('.aligned' in p.name or p.name.endswith(('_replay_trace.mcap', '_posture_trace.mcap')))
 
-def tree(path=None):
-    root = Path(path).expanduser() if path is not None else library_root()
+def tree(path=None,input_format='mcap'):
+    if input_format not in ('mcap','factory'):raise ValueError('请选择 MCAP 或机器人原生采集格式')
+    root = Path(path).expanduser() if path is not None else Path('/data/record') if input_format=='factory' else library_root()
     if not root.is_absolute() or not root.is_dir():
         raise ValueError('请选择机器人上的已有绝对目录')
     root = root.resolve()
+    def factory_row(folder):
+        bundle=folder/'record/-genie-bundle_data.pbdat'
+        size=sum(p.stat().st_size for p in folder.rglob('*') if p.is_file() and not p.is_symlink() and not any(part.startswith('.') for part in p.relative_to(folder).parts))
+        return {'id':str(folder),'file':folder.name,'path':str(bundle),'episode_dir':str(folder),
+                'category':'collection','input_format':'factory','bytes':size,'total_bytes':size,'modified_ns':bundle.stat().st_mtime_ns}
     def visit(folder):
         groups, episodes = [], []
+        if input_format=='factory' and (folder/'record/-genie-bundle_data.pbdat').is_file():
+            row=factory_row(folder)
+            return {'name':folder.name,'path':str(folder),'relative_path':str(folder.relative_to(root)),
+                    'groups':[],'episodes':[row],'count':1,'total_bytes':row['total_bytes']}
         with os.scandir(folder) as scan:
             entries=sorted(scan,key=lambda e:e.name)
         for entry in entries:
@@ -68,13 +83,15 @@ def tree(path=None):
                 continue
             p=folder/entry.name
             if entry.is_dir(follow_symlinks=False):
-                if (p / 'raw.mcap').is_file():
+                if input_format=='factory' and (p/'record/-genie-bundle_data.pbdat').is_file():
+                    episodes.append(factory_row(p))
+                elif input_format=='mcap' and (p / 'raw.mcap').is_file():
                     episodes.append(episode_row(p))
                 elif not (p / 'raw.mcap.partial').exists():
                     child = visit(p)
                     if child['count']:
                         groups.append(child)
-            elif is_episode_file(p) and entry.is_file(follow_symlinks=False):
+            elif input_format=='mcap' and is_episode_file(p) and entry.is_file(follow_symlinks=False):
                 episodes.append(episode_row(p))
         episodes.sort(key=lambda e: e['modified_ns'], reverse=True)
         return {'name': folder.name, 'path': str(folder), 'relative_path': str(folder.relative_to(root)),
@@ -120,9 +137,9 @@ def delete_episodes(paths):
     deleted, freed = [], 0
     for p in paths:
         freed += total_bytes(p)
-        match = re.match(r'^episode_(\d+)_', p.name)
-        if match:
-            remember_episode_number(p.parent, int(match.group(1)))
+        number = episode_number_from_name(p.name)
+        if number is not None:
+            remember_episode_number(p.parent, number)
         if p.is_dir():
             shutil.rmtree(p)
         else:

@@ -1,9 +1,19 @@
+/*
+使用说明
+用途：工作台基础状态、相机/关节显示、采集与姿态/MCAP执行交互。
+用法：由 app.py 提供的工作台页面加载，浏览器访问 http://机器人IP:18769/；不作为独立脚本启动。
+详细说明：../README.md
+*/
+/* 主工作台页面交互：采集、画面预览与显式原始指令回放。 */
 'use strict';
 const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=(x,n=3)=>Number.isFinite(Number(x))&&x!==null&&x!==undefined?Number(x).toFixed(n):'—';
 const clock=t=>`${Math.floor((t||0)/60).toString().padStart(2,'0')}:${Math.floor((t||0)%60).toString().padStart(2,'0')}`;
 const cameras=[['head_color','头部 RGB','CAM 01'],['hand_left_color','左腕 RGB','CAM 02'],['hand_right_color','右腕 RGB','CAM 03']];
 let source='live',group='arms',selected=null,current=null,dragging=false,sourceVersion=0,lastFileRefresh=0,replayPending=false,lastReplaySignature='',lastPoseSignature='';
+let mcapReplayRoot='',mcapReplayRequest=null,capturedMcapPath='';
+try{mcapReplayRoot=localStorage.getItem('datacp.mcapReplayPath')||'';}catch(_){}
+$('#mcapReplayPath').value=mcapReplayRoot;
 function notice(text){$('#notice').textContent=text;$('#notice').hidden=!text;}
 async function api(path,data){const r=await fetch(path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data)});let out=await r.json();if(!r.ok)throw Error(typeof out.detail==='string'?out.detail:JSON.stringify(out));return out;}
 function action(selector,fn){$(selector).addEventListener('click',async()=>{try{notice('');await fn();}catch(e){notice(e.message);}});}
@@ -47,6 +57,7 @@ function renderControlAvailability(s){
  $('#nextRecord').disabled=!rec.active||!!busy;
  $('#restorePose').disabled=!chosen||busy||rec.active;
  $('#checkPose').disabled=!chosen;
+ $('#deletePose').disabled=!chosen||busy;
  $('#chooseDir').disabled=rec.active||busy;$('#chooseRobotDir').disabled=rec.active||busy;
  $('#stopRobot').disabled=!rr.running;
  let reason='';
@@ -62,7 +73,7 @@ function renderControlAvailability(s){
 
 function render(s){current=s;if(typeof renderRobotStorage==='function')renderRobotStorage(s);if(typeof renderDataRates==='function')renderDataRates(s);if(typeof renderInspector==='function')renderInspector(s);$('#disk').textContent=`${fmt(s.disk_free_gb,1)} GB`;$('#clock').textContent=new Date().toLocaleTimeString('zh-CN',{hour12:false});$('#dataDir').textContent=s.data_dir;$('#saveDir').value=s.data_dir;renderLimits(s.limits);
 const online=s.streams.filter(x=>x.online),required=s.streams.filter(x=>x.required),okay=required.every(x=>x.online);$('#connDot').style.background=okay?'#37845d':'#d88853';$('#connection').textContent=source==='playback'?'文件回放 · 机器人':okay?'机器人 · 数据已连接':'部分数据未就绪';$('#streamSummary').textContent=`${online.length} / ${s.streams.length} 通道有数据`;
-const rec=s.recording;$('#record').disabled=rec.active;$('#stopRecord').disabled=!rec.active||s.robot_replay.running;$('#recordStatus').textContent=rec.active?`${s.robot_replay.running?'机器人本机记录执行反馈':'机器人本机采集原始数据'} · ${(rec.bytes/1048576).toFixed(1)} MB`:rec.error?`录制错误：${rec.error}`:'机器人本机采集 · 原始 MCAP';$('#recordStatus').classList.toggle('recording',rec.active);$('#elapsed').textContent=clock(rec.elapsed_s);
+const rec=s.recording;const capturePath=rec.active?rec.path:(rec.last?.path||'');if(capturePath)capturedMcapPath=capturePath;$('#captureFilePath').textContent=capturePath?(rec.active?'正在写入：':'最近保存：')+capturePath:'采集文件：开始采集后显示完整保存地址';$('#openCapturedMcap').disabled=rec.active||!capturedMcapPath;$('#record').disabled=rec.active;$('#stopRecord').disabled=!rec.active||s.robot_replay.running;$('#recordStatus').textContent=rec.active?`${s.robot_replay.running?'机器人本机记录执行反馈':'机器人本机采集原始数据'} · ${(rec.bytes/1048576).toFixed(1)} MB`:rec.error?`录制错误：${rec.error}`:'机器人本机采集 · 原始 MCAP';$('#recordStatus').classList.toggle('recording',rec.active);$('#elapsed').textContent=clock(rec.elapsed_s);
 for(const [name] of cameras){const stream=s.streams.find(x=>x.topic==='/camera/'+name),sample=s.samples['/camera/'+name],meta=sample?.meta;$(`#hz-${name}`).textContent=source==='live'?`${fmt(stream?.hz,1)} Hz`:'FILE';$(`#hz-${name}`).classList.toggle('stale',source==='live'&&!stream?.online);if(meta){$(`#shape-${name}`).textContent=`${meta.width} × ${meta.height} · JPEG`;$(`#seq-${name}`).textContent=`SEQ ${meta.sequence}`;}if(source==='live'&&!stream?.online){$(`#ph-${name}`).hidden=false;$(`#ph-${name}`).textContent='等待数据';}}
 $('#jointHz').textContent=source==='live'?`${fmt(s.streams.find(x=>x.topic==='/hal/joint_state')?.hz,1)} Hz`:'FILE';renderJoints(s.samples['/hal/joint_state']);renderGrippers(s.samples);
 const pb=s.playback;if(!dragging){$('#seek').max=pb.duration_s||1;$('#seek').value=pb.position_s||0;}$('#playTime').textContent=`${clock(pb.position_s)} / ${clock(pb.duration_s)}`;$('#play').textContent=pb.playing?'正在播放':'▶ 预览画面';
@@ -74,17 +85,50 @@ lastReplaySignature=signature;
 if(rr.kind==='posture'&&(rr.running||rr.phase)&&signature!==lastPoseSignature){$('#poseInfo').hidden=false;$('#poseInfo').textContent=rr.phase+(rr.error?'\n'+rr.error:'')+(rr.report?'\n'+(rr.report.tracking_passed?'反馈到位':'尚未确认到位'):'');}
 lastPoseSignature=signature;if(rec.error)notice(rec.error);if(s.startup_error)notice(s.startup_error);}
 async function poll(){try{render(await api(`/api/state?source=${source}`));}catch(e){$('#connection').textContent='连接中断';$('#connDot').style.background='#d88853';}setTimeout(poll,200);}poll();
-async function refreshFiles(){const category=$('#fileCategory').value||'collection';const {files,counts={}}=await api('/api/files?category='+category);$('#fileCounts').textContent='正式 '+(counts.collection??0)+' · 反馈 '+(counts.feedback??0)+' · 测试 '+(counts.test??0);$('#files').innerHTML=files.length?files.map(f=>`<div class="file-item ${f.file===selected?'selected':''}" role="button" tabindex="0" data-file="${esc(f.file)}"><strong>${esc(f.file)}</strong><small>${clock(f.duration_s)} · ${(f.bytes/1048576).toFixed(1)} MB · ${{collection:'正式采集',feedback:'执行反馈',test:'历史测试'}[f.category]||'MCAP'}</small></div>`).join(''):'<p class="muted">当前分类暂无记录；开始采集后会出现在「正式采集」。</p>';document.querySelectorAll('.file-item').forEach(el=>{const load=async()=>{try{await api('/api/playback/load',{file:el.dataset.file});selected=el.dataset.file;if(typeof loadFileSelections==='function')await loadFileSelections(selected);$('#replayInfo').textContent='尚未开始 · '+selected;lastReplaySignature=JSON.stringify(current?.robot_replay||{});$('#selectedFile').textContent=selected;['play','pause','validate','plan','execute'].forEach(id=>$('#'+id).disabled=false);setSource('playback');await refreshFiles();}catch(e){notice(e.message);}};el.onclick=load;el.onkeydown=e=>{if(e.key==='Enter')load();};});}
-action('#record',async()=>{setSource('live');await api('/api/record/start',{label:$('#task').value,pose_id:$('#poseSelect').value,...(typeof selectedRecordingTopics==='function'?{topics:selectedRecordingTopics()}:{})});});action('#nextRecord',async()=>{const r=await api('/api/record/next',{label:$('#task').value,pose_id:$('#poseSelect').value,...(typeof selectedRecordingTopics==='function'?{topics:selectedRecordingTopics()}:{})});notice('已保存 '+(r.saved?.file||'上一条')+'，正在采集 '+(r.recording?.file||'下一条')+'。');await refreshFiles();if(typeof refreshRobotFiles==='function')await refreshRobotFiles();});action('#stopRecord',async()=>{const r=await api('/api/record/stop',{});notice('机器人已保存：'+(r.robot_episode_dir||r.episode_dir||r.file)+'；可在数据导出面板导出到当前电脑。');await refreshFiles();if(typeof refreshRobotFiles==='function')await refreshRobotFiles();});action('#liveTab',()=>setSource('live'));action('#playbackTab',()=>setSource('playback'));action('#refresh',refreshFiles);$('#fileCategory').addEventListener('change',()=>refreshFiles().catch(e=>notice(e.message)));action('#play',async()=>{setSource('playback');await api('/api/playback/play',{speed:Number($('#speed').value)});$('#cameras').scrollIntoView?.({behavior:'smooth',block:'start'});});action('#pause',()=>api('/api/playback/pause',{}));
+async function loadMcapFile(path){
+ await api('/api/playback/load',{file:path});selected=path;
+ if(typeof loadFileSelections==='function')await loadFileSelections(selected);
+ $('#replayInfo').textContent='尚未执行机器人动作 · '+selected;
+ lastReplaySignature=JSON.stringify(current?.robot_replay||{});$('#selectedFile').textContent='回放文件：'+selected;
+ ['play','pause','validate','plan','execute'].forEach(id=>$('#'+id).disabled=false);setSource('playback');
+ await refreshFiles(path);
+}
+async function refreshFiles(path){
+ const requested=path||mcapReplayRoot;
+ if(mcapReplayRequest){await mcapReplayRequest;if(!path)return;}
+ mcapReplayRequest=(async()=>{
+  const result=await api('/api/mcap/files'+(requested?'?path='+encodeURIComponent(requested):''));
+  const files=result.files||[];mcapReplayRoot=result.path||result.root;
+  if(path||document.activeElement!==$('#mcapReplayPath'))$('#mcapReplayPath').value=mcapReplayRoot;
+  try{localStorage.setItem('datacp.mcapReplayPath',mcapReplayRoot);}catch(_){}
+  $('#fileCounts').textContent='共 '+files.length+' 个 MCAP 文件 · 目录：'+result.root;
+  $('#files').innerHTML=files.length?files.map(f=>`<div class="file-item ${f.path===selected?'selected':''}" role="button" tabindex="0" data-file="${esc(f.path)}"><strong>${esc(f.file)}</strong><small>${esc(f.label||'')} · ${clock(f.duration_s)} · ${(f.bytes/1048576).toFixed(1)} MB</small><code class="mcap-path">${esc(f.path)}</code></div>`).join(''):'<p class="muted">此目录没有已保存的 MCAP 文件；点击「选择文件」进入 episode 目录，或输入完整文件路径。</p>';
+  document.querySelectorAll('#files .file-item').forEach(el=>{const load=()=>loadMcapFile(el.dataset.file).catch(e=>notice(e.message));el.onclick=load;el.onkeydown=e=>{if(e.key==='Enter')load();};});
+  if(selected&&!files.some(f=>f.path===selected)){
+   selected=null;$('#selectedFile').textContent='选择机器人上的 MCAP 文件';
+   ['play','pause','validate','plan','execute'].forEach(id=>$('#'+id).disabled=true);
+  }
+ })();
+ try{await mcapReplayRequest;}finally{mcapReplayRequest=null;}
+}
+async function readMcapSource(){
+ const path=$('#mcapReplayPath').value.trim();await refreshFiles(path);
+ if(mcapReplayRoot.endsWith('.mcap'))await loadMcapFile(mcapReplayRoot);
+}
+action('#chooseMcapFile',async()=>{directoryTarget='mcap-replay';$('#createDir').hidden=true;$('#directoryTitle').textContent='选择机器人上的 MCAP 文件';$('#directoryDescription').textContent='进入目录后点击 .mcap 文件读取；这里只选择数据，不执行机器人动作。也可以使用当前目录查看文件列表。';await browse($('#mcapReplayPath').value||current?.data_dir);$('#directoryDialog').showModal();});
+action('#readMcapSource',readMcapSource);
+action('#openCapturedMcap',async()=>{if(!capturedMcapPath)return;$('#replayFormat').value='mcap';if(typeof updateReplayFormat==='function')updateReplayFormat();await loadMcapFile(capturedMcapPath);$('#dataReplay').scrollIntoView?.({behavior:'smooth',block:'start'});});
+
+action('#record',async()=>{setSource('live');await api('/api/record/start',{label:$('#task').value,pose_id:$('#poseSelect').value,...(typeof selectedRecordingTopics==='function'?{topics:selectedRecordingTopics()}:{})});});action('#nextRecord',async()=>{const r=await api('/api/record/next',{label:$('#task').value,pose_id:$('#poseSelect').value,...(typeof selectedRecordingTopics==='function'?{topics:selectedRecordingTopics()}:{})});notice('已保存 '+(r.saved?.path||r.saved?.episode_dir||r.saved?.file||'上一条')+'；正在采集 '+(r.recording?.path||r.recording?.file||'下一条')+'。');await refreshFiles();if(typeof refreshRobotFiles==='function')await refreshRobotFiles();if(typeof refreshConversionAfterCapture==='function')await refreshConversionAfterCapture();});action('#stopRecord',async()=>{const r=await api('/api/record/stop',{});notice('机器人已保存：'+(r.robot_episode_dir||r.episode_dir||r.file)+'；可在数据导出面板导出到当前电脑。');await refreshFiles();if(typeof refreshRobotFiles==='function')await refreshRobotFiles();if(typeof refreshConversionAfterCapture==='function')await refreshConversionAfterCapture();});action('#liveTab',()=>setSource('live'));action('#playbackTab',()=>setSource('playback'));action('#refresh',()=>refreshFiles($('#mcapReplayPath').value.trim()));action('#play',async()=>{setSource('playback');await api('/api/playback/play',{speed:Number($('#speed').value)});$('#cameras').scrollIntoView?.({behavior:'smooth',block:'start'});});action('#pause',()=>api('/api/playback/pause',{}));
 $('#seek').addEventListener('pointerdown',()=>dragging=true);$('#seek').addEventListener('change',async()=>{try{await api('/api/playback/seek',{seconds:Number($('#seek').value)});}catch(e){notice(e.message);}dragging=false;});
 document.querySelectorAll('[data-group]').forEach(b=>b.onclick=()=>{group=b.dataset.group;document.querySelectorAll('[data-group]').forEach(x=>x.classList.toggle('active',x===b));if(current)renderJoints(current.samples['/hal/joint_state']);});
-async function resultAction(path,message){$('#result').hidden=false;$('#result').textContent=message;const result=await api(path,{});$('#result').textContent=JSON.stringify(result,null,2);return result;}
-action('#validate',()=>resultAction(`/api/files/${encodeURIComponent(selected)}/validate`,'正在检查 MCAP 索引、CRC、图像和通道…'));
-action('#plan',async()=>{const file=selected;replayPending=true;$('#plan').disabled=true;$('#replayInfo').textContent='正在读取原始 MCAP 并检查起始姿态…';
+async function resultAction(path,message,body={}){$('#result').hidden=false;$('#result').textContent=message;const result=await api(path,body);$('#result').textContent=JSON.stringify(result,null,2);return result;}
+action('#validate',()=>resultAction('/api/mcap/validate','正在检查 MCAP 索引、CRC、图像和通道…',{file:selected}));
+action('#plan',async()=>{const file=selected;replayPending=true;$('#plan').disabled=true;$('#replayInfo').textContent='正在读取原始 MCAP 控制指令与空值…';
 try{const p=await api('/api/replay/plan',{file,speed:Number($('#robotSpeed').value),...(typeof selectedMotionNames==='function'?{controlled_names:selectedMotionNames()}:{})});if(selected===file)$('#replayInfo').textContent='准备检查完成 · 尚未执行机器人动作\n'+JSON.stringify(p,null,2);}
 catch(e){if(selected===file)$('#replayInfo').textContent='回放准备失败：'+e.message;throw e;}
 finally{replayPending=false;$('#plan').disabled=!selected;}});
-action('#execute',()=>{pendingMotion='replay';const names=typeof selectedMotionNames==='function'?selectedMotionNames():[];$('#motionSummary').textContent='仅执行勾选的 '+names.length+' 个关节 / 夹爪，先返回这些关节的起始位置，再按该记录时间线回放。未选关节不发送位置目标。';$('#motionFile').textContent=selected;$('#confirmMotion').textContent='开始全过程回放';$('#motionDialog').showModal();});action('#cancelMotion',()=>$('#motionDialog').close());action('#confirmMotion',async()=>{$('#motionDialog').close();setSource('live');const posture=pendingMotion==='posture',panel=$(posture?'#poseInfo':'#replayInfo');panel.hidden=false;panel.textContent=posture?'正在准备恢复姿态…':'正在读取原始 MCAP，准备全过程回放…';replayPending=!posture;
+action('#execute',()=>{pendingMotion='replay';const names=typeof selectedMotionNames==='function'?selectedMotionNames():[];$('#motionSummary').textContent='仅执行勾选的 '+names.length+' 个关节 / 夹爪，直接按原始指令时间线回放；不返回首帧、不插值，空值不生成目标。未选关节不发送位置目标。';$('#motionFile').textContent=selected;$('#confirmMotion').textContent='开始全过程回放';$('#motionDialog').showModal();});action('#cancelMotion',()=>$('#motionDialog').close());action('#confirmMotion',async()=>{$('#motionDialog').close();setSource('live');const posture=pendingMotion==='posture',panel=$(posture?'#poseInfo':'#replayInfo');panel.hidden=false;panel.textContent=posture?'正在准备恢复姿态…':'正在读取原始 MCAP，准备全过程回放…';replayPending=!posture;
 try{if(posture)await api('/api/poses/'+encodeURIComponent($('#poseSelect').value)+'/restore',{confirm_motion:true});else await api('/api/replay/start',{file:selected,speed:Number($('#robotSpeed').value),confirm_motion:true,...(typeof selectedMotionNames==='function'?{controlled_names:selectedMotionNames()}:{})});}
 catch(e){panel.textContent=(posture?'姿态恢复准备失败：':'回放准备失败：')+e.message;throw e;}
 finally{replayPending=false;lastReplaySignature='';}});
@@ -99,12 +143,20 @@ async function refreshPoses(choose){
   if(current)renderControlAvailability(current);
 }
 action('#savePose',async()=>{const p=await api('/api/poses',{label:$('#poseName').value||'初始姿态'});await refreshPoses(p.id);notice(`姿态已保存为 MCAP：${p.label}。仅保存 22 个本体关节和双夹爪。`);});
+// 删除只移动已选姿态到机器人姿态回收目录，不改动其它姿态或采集数据。
+action('#deletePose',async()=>{
+ const id=$('#poseSelect').value,p=poseCatalog.find(p=>p.id===id);
+ if(!id||!confirm(`删除姿态「${p?.label||id}」？文件将移至姿态回收目录，可恢复。`))return;
+ await api(`/api/poses/${encodeURIComponent(id)}/delete`,{});
+ $('#poseSelect').value='';await refreshPoses();$('#poseInfo').hidden=true;
+ notice(`已删除姿态：${p?.label||id}。原文件保留在姿态回收目录。`);
+});
 action('#checkPose',async()=>{const p=await api(`/api/poses/${encodeURIComponent($('#poseSelect').value)}/plan`,{});$('#poseInfo').hidden=false;$('#poseInfo').textContent=`${p.label}\n当前与保存姿态最大关节差：${fmt(p.max_joint_delta_rad)} rad；夹爪差：${p.gripper_delta_native.map(x=>fmt(x,5)).join(' / ')}\n恢复范围：躯干、头部、双臂、双夹爪。尚未执行恢复。`;});
 action('#restorePose',()=>{pendingMotion='posture';const p=poseCatalog.find(p=>p.id===$('#poseSelect').value);$('#motionSummary').textContent='将机器人恢复到已保存的躯干、头部、双臂和双夹爪姿态，不移动底盘。本体关节先恢复，再恢复双夹爪；执行结果将在初始姿态区域显示。';$('#motionFile').textContent=p?.label||'';$('#confirmMotion').textContent='确认恢复姿态';$('#motionDialog').showModal();});
-async function browse(path){folderState=await api(((directoryTarget==='library'||directoryTarget==='conversion')?'/api/library/directories':directoryTarget==='robot'?'/api/robot-storage/directories':'/api/directories')+(path?'?path='+encodeURIComponent(path):''));$('#folderPath').value=folderState.path;$('#folderMeta').textContent=`可用空间 ${fmt(folderState.free_gb,1)} GB · ${folderState.folders.length} 个文件夹`;$('#folderList').innerHTML=folderState.folders.length?folderState.folders.map(f=>`<button data-folder="${esc(f.path)}">▸ ${esc(f.name)}</button>`).join(''):'<p class="muted">此目录下没有子文件夹</p>';$('#folderList').querySelectorAll('button').forEach(b=>b.onclick=()=>browse(b.dataset.folder).catch(e=>notice(e.message)));}
-action('#chooseDir',async()=>{directoryTarget='robot';$('#createDir').hidden=false;$('#directoryTitle').textContent='选择机器人保存目录';$('#directoryDescription').textContent='采集、文件查看和回放均使用此机器人本机目录。';await browse(current?.data_dir);$('#directoryDialog').showModal();});
+async function browse(path){$('#useDir').disabled=true;$('#createDir').disabled=true;try{folderState=await api((directoryTarget==='mcap-replay'?'/api/mcap/browse':((['library','conversion','native-export','native-replay','lerobot-replay'].includes(directoryTarget))?'/api/library/directories':directoryTarget==='robot'?'/api/robot-storage/directories':'/api/directories'))+(path?'?path='+encodeURIComponent(path):''));$('#folderPath').value=folderState.path;$('#folderMeta').textContent=directoryTarget==='mcap-replay'?`${folderState.folders.length} 个文件夹 · ${(folderState.files||[]).length} 个 MCAP 文件`:`可用空间 ${fmt(folderState.free_gb,1)} GB · ${folderState.folders.length} 个文件夹`;$('#folderList').innerHTML=folderState.folders.length?folderState.folders.map(f=>`<button data-folder="${esc(f.path)}">▸ ${esc(f.name)}</button>`).join(''):'<p class="muted">此目录下没有子文件夹</p>';if(directoryTarget==='mcap-replay')$('#folderList').innerHTML+=(folderState.files||[]).map(f=>`<button data-mcap-file="${esc(f.path)}">▤ ${esc(f.file)}<small class="mcap-path">${esc(f.path)}</small></button>`).join('');$('#folderList').querySelectorAll('[data-mcap-file]').forEach(b=>b.onclick=async()=>{try{await loadMcapFile(b.dataset.mcapFile);$('#directoryDialog').close();}catch(e){notice(e.message);}});$('#folderList').querySelectorAll('[data-folder]').forEach(b=>b.onclick=()=>browse(b.dataset.folder).catch(e=>notice(e.message)));}finally{$('#useDir').disabled=false;$('#createDir').disabled=false;}}
+action('#chooseDir',async()=>{directoryTarget='robot';$('#createDir').hidden=false;$('#directoryTitle').textContent='选择机器人保存目录';$('#directoryDescription').textContent='此目录仅用于后续采集；MCAP 回放文件在数据回放区独立选择。';await browse(current?.data_dir);$('#directoryDialog').showModal();});
 action('#browsePath',()=>browse($('#folderPath').value));action('#parentFolder',()=>browse(folderState?.parent));action('#cancelDir',()=>$('#directoryDialog').close());
-async function useDirectory(create){const path=create?$('#folderPath').value:folderState?.path;if(!path)throw Error('请先选择目录');if(directoryTarget==='conversion'){await refreshConversionFiles(path);$('#directoryDialog').close();return;}if(directoryTarget==='library'){await api('/api/library/root',{path});$('#directoryDialog').close();await refreshRobotFiles();notice('导出 / 删除范围已更新：'+path);return;}const r=await api(directoryTarget==='robot'?'/api/robot-storage/directory':'/api/directory',{path,create});selected=null;$('#replayInfo').textContent='尚未开始';$('#fileCategory').value='collection';$('#selectedFile').textContent='选择一条 episode';['play','pause','validate','plan','execute'].forEach(id=>$('#'+id).disabled=true);setSource('live');$('#saveDir').value=r.data_dir;$('#directoryDialog').close();await refreshFiles();if(typeof refreshRobotFiles==='function')await refreshRobotFiles();notice(`后续 episode 将保存到 ${r.data_dir}`);}
+async function useDirectory(create){const path=create?$('#folderPath').value:folderState?.path;if(!path)throw Error('请先选择目录');if(directoryTarget==='mcap-replay'){await refreshFiles(path);$('#directoryDialog').close();return;}if(directoryTarget==='lerobot-replay'){await useLerobotReplayRoot(path);$('#directoryDialog').close();return;}if(directoryTarget==='native-export'){await refreshRobotFiles(path,'factory');$('#directoryDialog').close();return;}if(directoryTarget==='native-replay'){await refreshNativeFiles(path);$('#directoryDialog').close();return;}if(directoryTarget==='conversion'){await refreshConversionFiles(path);$('#directoryDialog').close();return;}if(directoryTarget==='library'){await api('/api/library/root',{path});$('#directoryDialog').close();await refreshRobotFiles();notice('导出 / 删除范围已更新：'+path);return;}const r=await api(directoryTarget==='robot'?'/api/robot-storage/directory':'/api/directory',{path,create});$('#saveDir').value=r.data_dir;$('#directoryDialog').close();await refreshFiles();if(typeof refreshRobotFiles==='function')await refreshRobotFiles();if(typeof refreshConversionAfterCapture==='function')await refreshConversionAfterCapture();notice(`后续 episode 将保存到 ${r.data_dir}`);}
 action('#useDir',()=>useDirectory(false));action('#createDir',()=>useDirectory(true));refreshPoses().catch(e=>notice(e.message));
 
 $('#poseSelect').addEventListener('change',()=>{if(current)renderControlAvailability(current);});

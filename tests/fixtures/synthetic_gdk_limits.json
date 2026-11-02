@@ -1,0 +1,108 @@
+{
+  "idx01_body_joint1": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx02_body_joint2": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx03_body_joint3": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx04_body_joint4": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx05_body_joint5": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx11_head_joint1": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx12_head_joint2": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx13_head_joint3": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx21_arm_l_joint1": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx22_arm_l_joint2": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx23_arm_l_joint3": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx24_arm_l_joint4": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx25_arm_l_joint5": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx26_arm_l_joint6": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx27_arm_l_joint7": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx61_arm_r_joint1": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx62_arm_r_joint2": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx63_arm_r_joint3": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx64_arm_r_joint4": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx65_arm_r_joint5": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "idx66_arm_r_joint6": {
+    "min": -1.0123,
+    "max": 1.0123
+  },
+  "idx67_arm_r_joint7": {
+    "min": -2.0,
+    "max": 2.0
+  },
+  "end_effector": {
+    "dahuan": {
+      "left_tool": [
+        {
+          "name": "idx31_gripper_l_inner_joint1",
+          "min": 0.0,
+          "max": 0.025
+        }
+      ],
+      "right_tool": [
+        {
+          "name": "idx71_gripper_r_inner_joint1",
+          "min": 0.0,
+          "max": 0.025
+        }
+      ]
+    }
+  }
+}

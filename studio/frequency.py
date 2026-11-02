@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：消息接收、写入和SDK调用的观察频率统计。
+# 用法：内部模块，由采集和页面状态调用；只计数，不调度或过滤原始样本。
+# 详细说明：采集与预览使用说明.md
+
 """Observed message / SDK-call rates; never schedules or filters samples."""
 from collections import deque
 class RateMeter:

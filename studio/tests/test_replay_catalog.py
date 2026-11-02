@@ -1,3 +1,9 @@
+# 使用说明
+# 用途：平台离线回归测试：replay_catalog。
+# 用法：在studio目录执行 python -m unittest tests.test_replay_catalog（已配置依赖的Python）；使用模拟SDK/API，不运行真机任务。
+# 详细说明：../README.md
+
+"""采集序号、回放任务状态及原指令保持的离线回归。"""
 import tempfile
 from pathlib import Path
 import unittest
@@ -14,7 +20,7 @@ class ReplayCatalog(unittest.TestCase):
             a=recorder.start('task',[]);recorder.stop([])
             recorder.start('posture_feedback',[],{'kind':'posture'});recorder.stop([])
             b=recorder.start('task',[]);recorder.stop([])
-            self.assertTrue(a['file'].startswith('episode_1_'),a['file']);self.assertTrue(b['file'].startswith('episode_2_'),b['file'])
+            self.assertTrue(a['file'].startswith('task_1_'),a['file']);self.assertTrue(b['file'].startswith('task_2_'),b['file'])
             self.assertEqual(len(storage.list_files()),2)
             self.assertEqual(len(storage.list_files('feedback')),1)
     def test_prepare_failure_is_retained_as_replay_failure_without_worker(self):
@@ -27,21 +33,13 @@ class ReplayCatalog(unittest.TestCase):
 
 
 class RawReplay(unittest.TestCase):
-    def test_raw_positions_use_recorded_receive_time_and_full_episode(self):
-        topics=[robot_replay.JOINT,*robot_replay.GRIPS]
-        rows=[]
-        for k,topic in enumerate(topics):
-            for i,t in enumerate([0.,.1,.6,1.] if k==0 else [0.,.4,1.6]):
-                d={'name':[str(k)],'motor_position':[float(i)],'type':1,'end_state':[{'position':float(i)}]}
-                rows.append({'topic':topic,'data':d,'wall_ns':1000000000+int(t*1e9),'meta':{'source_ns':str(5000000000+int(t*.8*1e9))}})
-        # Source timestamps can repeat; MCAP receive time still defines original recording order.
-        rows[-1]['meta']['source_ns']=rows[-2]['meta']['source_ns']
-        with patch.object(robot_replay,'raw_events',return_value=iter(sorted(rows,key=lambda x:x['wall_ns']))),patch.object(robot_replay,'bounds',return_value=(1000000000,2800000000)):
+    def test_source_commands_are_held_without_feedback_replacement(self):
+        ep={'names':['idx01_body_joint1'],'available_names':['idx01_body_joint1'],
+            'times':[0.,.1,.6], 'actions':[[None],[1.],[2.]], 'recorded_states':[[9.]]*3,
+            'duration_s':1.8,'path':'raw.mcap','episode':0,'fps':100}
+        with patch('source_episode.load_source',return_value=ep):
             t=robot_replay.Trajectory(Path('/tmp/raw.mcap'),None)
-        self.assertAlmostEqual(t.duration,1.8)
-        self.assertEqual(t.at(.3),[1.,0.,0.])
-        self.assertEqual(t.at(.65),[2.,1.,1.])
-        self.assertEqual(t.at(1.8),[3.,2.,2.])
+        self.assertEqual(t.at(.05),[None]);self.assertEqual(t.at(.3),[1.]);self.assertEqual(t.at(1.8),[2.])
 
 if __name__=='__main__':unittest.main()
 

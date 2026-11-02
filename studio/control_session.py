@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：厂商控制权交接封装。
+# 用法：内部模块，仅显式回放/姿态恢复调用 release_teleop；只读状态检测不调用它。
+# 详细说明：回放与姿态使用说明.md
+
 """Vendor control handoff, called only by explicit replay or posture restore."""
 import json
 import os

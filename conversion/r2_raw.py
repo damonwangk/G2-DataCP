@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：兼容读取厂商bundle容器及其张量，供历史工具与离线测试使用。
+# 使用：作为库导入；当前主转换入口读取逐话题pbdat，不以bundle替代原指令。
+# 多文件使用说明：README.md 的文件职责与历史兼容模块。
+#
 """Bounded reader for the observed G2 pbdat bundle container; no SDK imports."""
 from __future__ import annotations
 

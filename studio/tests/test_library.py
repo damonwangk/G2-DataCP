@@ -1,3 +1,8 @@
+# 使用说明
+# 用途：平台离线回归测试：library。
+# 用法：在studio目录执行 python -m unittest tests.test_library（已配置依赖的Python）；使用模拟SDK/API，不运行真机任务。
+# 详细说明：../README.md
+
 import io,json,tempfile,tarfile,threading,unittest
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -41,6 +46,29 @@ class LibraryTests(unittest.TestCase):
   for path in ['relative/path',str(self.base/'missing')]:
    result=self.client.get('/api/library/tree',params={'path':path})
    self.assertEqual(result.status_code,400)
+ def test_factory_tree_selects_recordings_recursively_without_changing_roots(self):
+  self.episode('mcap')
+  for relative in ['factory_a','nested/factory_b']:
+   bundle=self.root/relative/'record/-genie-bundle_data.pbdat';bundle.parent.mkdir(parents=True);bundle.write_bytes(b'bundle')
+  before=library.SETTINGS.read_bytes()
+  out=self.client.get('/api/library/tree',params={'path':str(self.root),'input_format':'factory'}).json()
+  self.assertEqual(out['tree']['count'],2)
+  self.assertEqual(out['tree']['episodes'][0]['file'],'factory_a')
+  self.assertEqual(out['tree']['groups'][0]['episodes'][0]['input_format'],'factory')
+  direct=library.tree(str(self.root/'factory_a'),'factory')
+  self.assertEqual(direct['tree']['count'],1)
+  self.assertEqual(library.SETTINGS.read_bytes(),before)
+  self.assertEqual(library.tree(str(self.root))['tree']['count'],1)
+ def test_native_export_preserves_all_original_files_and_structure(self):
+  source=self.root/'native';files={'record/-genie-bundle_data.pbdat':b'original bundle','camera/head_color/head_color.h265':b'original h265','camera/head_color/head_color.txt':b'1 I\n','meta_info.json':b'{}','record/other_sensor.pbdat':b'other raw data'}
+  for relative,data in files.items():
+   p=source/relative;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(data)
+  response=self.client.post('/api/export/prepare',json={'episode_paths':[str(source)],'input_format':'factory','root':str(self.root)})
+  self.assertEqual(response.status_code,200,response.text)
+  archive=self.client.get(response.json()['archive_url'])
+  with tarfile.open(fileobj=io.BytesIO(archive.content)) as t:
+   for relative,data in files.items():self.assertEqual(t.extractfile('data/native/'+relative).read(),data)
+  self.assertTrue((source/'meta_info.json').exists())
  def test_export_same_episode_names_in_different_folders(self):
   a=self.episode('A',payload=b'A');b=self.episode('B',payload=b'B')
   m=self.client.post('/api/export/prepare',json={'episode_paths':[str(a),str(b)]}).json()
@@ -69,6 +97,11 @@ class LibraryTests(unittest.TestCase):
   r=self.client.post('/api/library/delete',json={'episode_paths':[str(a)],'confirm':True})
   self.assertEqual(r.status_code,200,r.text);self.assertEqual(r.json()['freed_bytes'],total)
   self.assertFalse(a.exists());self.assertTrue(b.exists());self.assertTrue(a.parent.exists())
+ def test_delete_custom_record_without_counter_preserves_sequence(self):
+  p=self.episode('copied','122episode_8_20260314_005050')
+  self.assertFalse((p.parent/'.episode_sequence.json').exists())
+  library.delete_episodes([p])
+  self.assertEqual(storage.episode_number(p.parent),8)
  def test_deletion_requires_confirmation_and_rejects_parent_outside_symlink_partial(self):
   a=self.episode('A');outside=self.base/'outside';outside.mkdir();(outside/'raw.mcap').write_bytes(b'keep')
   link=self.root/'linked';link.symlink_to(outside,target_is_directory=True)
@@ -81,7 +114,7 @@ class LibraryTests(unittest.TestCase):
   a=self.episode('A','episode_2_time');storage.select_directory(str(a.parent))
   self.client.post('/api/library/delete',json={'episode_paths':[str(a)],'confirm':True})
   recorder=storage.Recorder(Schemas());recorder.start('test',[],topics=['/hal/joint_state']);out=recorder.stop([])
-  self.assertTrue(out['file'].startswith('episode_3_'));self.assertEqual(Path(out['path']).parent.parent,a.parent)
+  self.assertTrue(out['file'].startswith('test_3_'));self.assertEqual(Path(out['path']).parent.parent,a.parent)
  def test_deleting_current_preview_unloads_it_and_invalidates_prepared_export(self):
   a=self.episode('A');app.playback.file=a.name;app.playback.path=a/'raw.mcap'
   m=self.client.post('/api/export/prepare',json={'episode_paths':[str(a)]}).json()
@@ -99,7 +132,7 @@ class LibraryTests(unittest.TestCase):
   agent.lock=threading.RLock();agent.recorder=storage.Recorder(Schemas());agent.receiver=NS(stats=lambda:[],latest={});agent.last_path=self.base/'last.json';agent.limit_monitor=NS(status=lambda latest:{})
   agent.start({'label':'continuous','topics':['/hal/joint_state']})
   result=agent.next_episode({});self.assertTrue(Path(result['saved']['path']).exists())
-  self.assertTrue(result['saved']['file'].startswith('episode_1_'));self.assertTrue(result['recording']['file'].startswith('episode_2_'))
+  self.assertTrue(result['saved']['file'].startswith('continuous_1_'));self.assertTrue(result['recording']['file'].startswith('continuous_2_'))
   self.assertEqual(result['recording']['selected_topics'],['/hal/joint_state']);agent.stop()
   agent.start({'label':'continuous','topics':['/hal/joint_state']});last=agent.stop()
-  self.assertTrue(last['file'].startswith('episode_3_'));self.assertEqual(storage.data_dir(),a)
+  self.assertTrue(last['file'].startswith('continuous_3_'));self.assertEqual(storage.data_dir(),a)
